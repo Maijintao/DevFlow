@@ -26,7 +26,7 @@ export default function KnowledgeBasesPage() {
     <div className="mx-auto min-h-[calc(100vh-74px)] max-w-7xl px-2 py-5 sm:px-5">
       <header className="flex flex-col gap-4 border-b border-line pb-5 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <div className="mb-1 flex items-center gap-2 text-xs font-medium text-teal-700">
+          <div className="mb-1 flex items-center gap-2 text-xs font-medium text-slate-600">
             <Database className="h-4 w-4" /> RAG KNOWLEDGE
           </div>
           <h1 className="text-2xl font-semibold text-ink">项目知识</h1>
@@ -34,7 +34,7 @@ export default function KnowledgeBasesPage() {
         </div>
         <Link
           href="/"
-          className="inline-flex h-10 items-center justify-center gap-2 rounded-md bg-teal-700 px-4 text-sm font-medium text-white transition hover:bg-teal-800"
+          className="primary-button inline-flex h-10 items-center justify-center gap-2 px-4 text-sm font-medium transition"
         >
           <GitBranch className="h-4 w-4" /> 连接仓库
         </Link>

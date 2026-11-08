@@ -2,7 +2,7 @@ import { clsx } from "clsx";
 
 export function Card({ className, children }: { className?: string; children: React.ReactNode }) {
   return (
-    <section className={clsx("rounded-lg border border-line/80 bg-white/90 p-5 shadow-sm shadow-slate-200/60 backdrop-blur", className)}>
+    <section className={clsx("surface-card border border-line bg-white p-4", className)}>
       {children}
     </section>
   );
@@ -10,10 +10,9 @@ export function Card({ className, children }: { className?: string; children: Re
 
 export function PageTitle({ title, description }: { title: string; description: string }) {
   return (
-    <div className="mb-6 flex flex-col gap-2 border-b border-line/80 pb-5">
-      <div className="text-xs font-medium uppercase tracking-[0.18em] text-accent">DevFlow AI</div>
-      <h1 className="text-2xl font-semibold tracking-normal text-ink md:text-3xl">{title}</h1>
-      <p className="max-w-3xl text-sm leading-6 text-slate-600">{description}</p>
+    <div className="page-title mb-4 flex flex-col gap-1 pb-4">
+      <h1 className="text-xl font-semibold tracking-normal text-ink md:text-2xl">{title}</h1>
+      <p className="max-w-3xl text-sm leading-5 text-slate-600">{description}</p>
     </div>
   );
 }
@@ -22,7 +21,7 @@ export function PrimaryButton({ children, className, ...props }: React.ButtonHTM
   return (
     <button
       className={clsx(
-        "inline-flex items-center justify-center rounded-md bg-accent px-4 py-2 text-sm font-medium text-white shadow-sm shadow-teal-900/10 transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-60",
+        "primary-button inline-flex items-center justify-center bg-accent px-4 py-2 text-sm font-bold text-white transition hover:bg-teal-700 disabled:cursor-not-allowed disabled:opacity-60",
         className
       )}
       {...props}

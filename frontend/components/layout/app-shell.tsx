@@ -1,31 +1,41 @@
+"use client";
+
 import Link from "next/link";
+import { usePathname } from "next/navigation";
+import { Activity, BookOpen, Boxes, ClipboardCheck, FolderGit2, GitBranch, LayoutDashboard, ListChecks, MessageSquareText } from "lucide-react";
 
 const navItems = [
-  { href: "/", label: "Workspace" },
-  { href: "/knowledge", label: "项目知识" },
-  { href: "/rag", label: "RAG 工作室" },
-  { href: "/repos", label: "Repos" },
-  { href: "/action-drafts", label: "Drafts" },
-  { href: "/workflow-runs", label: "Runs" },
-  { href: "/workspaces", label: "Reports" },
-  { href: "/code-graph", label: "Code Graph" },
-  { href: "/evals", label: "Evals" }
+  { href: "/", label: "Workspace", icon: LayoutDashboard },
+  { href: "/knowledge", label: "项目知识", icon: BookOpen },
+  { href: "/rag", label: "RAG 工作室", icon: MessageSquareText },
+  { href: "/repos", label: "Repos", icon: FolderGit2 },
+  { href: "/action-drafts", label: "Drafts", icon: ClipboardCheck },
+  { href: "/workflow-runs", label: "Runs", icon: Activity },
+  { href: "/workspaces", label: "Reports", icon: ListChecks },
+  { href: "/code-graph", label: "Code Graph", icon: GitBranch },
+  { href: "/evals", label: "Evals", icon: Boxes }
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
+  const pathname = usePathname();
+
   return (
-    <main className="min-h-screen">
-      <div className="border-b border-line bg-white/85 px-4 py-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="mr-2 text-sm font-semibold text-ink">DevFlow AI</div>
+    <main className="app-shell min-h-screen">
+      <aside className="app-navigation">
+        <Link href="/" className="app-brand" aria-label="DevFlow AI 首页">
+          <span className="app-brand-mark">DF</span>
+          <span>DevFlow AI</span>
+        </Link>
+        <nav className="app-nav-items" aria-label="主要导航">
           {navItems.map((item) => (
-            <Link key={item.href} href={item.href} className="rounded-md px-3 py-1.5 text-sm text-slate-600 transition hover:bg-teal-50 hover:text-teal-800">
+            <Link key={item.href} href={item.href} aria-current={pathname === item.href || (item.href !== "/" && pathname.startsWith(`${item.href}/`)) ? "page" : undefined} className="app-nav-link">
+              <item.icon aria-hidden="true" className="h-4 w-4 shrink-0" />
               {item.label}
             </Link>
           ))}
-        </div>
-      </div>
-      <div className="w-full p-3">{children}</div>
+        </nav>
+      </aside>
+      <div className="app-content">{children}</div>
     </main>
   );
 }

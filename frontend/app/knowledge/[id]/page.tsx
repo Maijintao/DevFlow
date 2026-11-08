@@ -204,7 +204,7 @@ export default function KnowledgeBaseDetailPage() {
   if (!knowledge || !config) return <div className="m-6 border border-red-200 bg-red-50 p-4 text-sm text-red-700">{error || "未找到仓库"}</div>;
 
   return (
-    <div className="min-h-[calc(100vh-74px)] bg-[#f7f8fa]">
+    <div className="knowledge-detail min-h-[calc(100vh-24px)]">
       <header className="border-b border-line bg-white px-4 py-3">
         <div className="flex min-w-0 items-center gap-3">
           <Link href="/knowledge" title="返回项目知识" className="grid h-9 w-9 shrink-0 place-items-center rounded-md border border-line text-slate-600 hover:text-ink"><ArrowLeft className="h-4 w-4" /></Link>
@@ -258,7 +258,7 @@ export default function KnowledgeBaseDetailPage() {
               <div className="flex items-end justify-between gap-4">
                 <div><h2 className="text-lg font-semibold text-ink">文档</h2><p className="mt-1 text-sm text-slate-500">查看解析状态和真实分段内容。</p></div>
                 <input ref={fileInput} type="file" multiple accept=".txt,.md,.markdown,.pdf,.docx,.json,.csv,.log" className="hidden" onChange={(event) => uploadFiles(event.target.files)} />
-                <button type="button" onClick={() => fileInput.current?.click()} disabled={uploading} className="inline-flex h-10 items-center gap-2 rounded-md bg-teal-700 px-4 text-sm font-medium text-white disabled:opacity-50">
+                <button type="button" onClick={() => fileInput.current?.click()} disabled={uploading} className="primary-button inline-flex h-10 items-center gap-2 px-4 text-sm font-medium disabled:opacity-50">
                   {uploading ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />} 添加文件
                 </button>
               </div>
@@ -292,7 +292,7 @@ export default function KnowledgeBaseDetailPage() {
                   <section className="border border-line bg-white p-4 shadow-sm">
                     <label className="text-xs font-medium text-slate-600">查询文本</label>
                     <textarea value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") runRetrieval(); }} maxLength={250} placeholder="例如：新员工可以请几天年假？" className="mt-2 min-h-36 w-full resize-y rounded-md border border-line p-3 text-sm leading-6 outline-none focus:border-teal-600" />
-                    <div className="mt-3 flex items-center justify-between"><span className="text-xs text-slate-400">{query.length} / 250</span><button type="button" disabled={!query.trim() || testing} onClick={runRetrieval} className="inline-flex h-9 items-center gap-2 rounded-md bg-teal-700 px-4 text-sm font-medium text-white disabled:opacity-40">{testing ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />} 测试</button></div>
+                    <div className="mt-3 flex items-center justify-between"><span className="text-xs text-slate-400">{query.length} / 250</span><button type="button" disabled={!query.trim() || testing} onClick={runRetrieval} className="primary-button inline-flex h-9 items-center gap-2 px-4 text-sm font-medium disabled:opacity-40">{testing ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />} 测试</button></div>
                   </section>
                   <section className="border border-line bg-white p-4 shadow-sm">
                     <div className="flex items-center justify-between"><h3 className="flex items-center gap-2 text-sm font-semibold text-ink"><History className="h-4 w-4" /> 测试记录</h3><span className="text-xs text-slate-400">最近 {history.length} 条</span></div>
@@ -356,7 +356,7 @@ export default function KnowledgeBaseDetailPage() {
               <div className="mt-5 border border-line bg-white p-5 shadow-sm sm:p-7">
                 <RetrievalSettings value={config} catalog={catalog} onChange={setConfig} />
                 {message ? <div className="mt-5 flex items-center gap-2 bg-emerald-50 px-3 py-2.5 text-sm text-emerald-700"><Check className="h-4 w-4" /> {message}</div> : null}
-                <div className="mt-6 flex justify-end border-t border-line pt-5"><button type="button" onClick={saveSettings} disabled={saving || config.chunk_overlap >= config.chunk_size} className="inline-flex h-10 items-center gap-2 rounded-md bg-teal-700 px-5 text-sm font-medium text-white disabled:opacity-40">{saving ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} 保存设置</button></div>
+                <div className="mt-6 flex justify-end border-t border-line pt-5"><button type="button" onClick={saveSettings} disabled={saving || config.chunk_overlap >= config.chunk_size} className="primary-button inline-flex h-10 items-center gap-2 px-5 text-sm font-medium disabled:opacity-40">{saving ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <Save className="h-4 w-4" />} 保存设置</button></div>
               </div>
             </div>
           ) : null}
@@ -365,7 +365,7 @@ export default function KnowledgeBaseDetailPage() {
 
       {selectedDocument ? (
         <div className="fixed inset-0 z-50 flex justify-end bg-black/30" onMouseDown={() => setSelectedDocument(null)}>
-          <div className="h-full w-full max-w-2xl overflow-y-auto border-l border-line bg-[#f7f8fa] shadow-2xl" onMouseDown={(event) => event.stopPropagation()}>
+          <div className="h-full w-full max-w-2xl overflow-y-auto border-l border-line bg-slate-50 shadow-2xl" onMouseDown={(event) => event.stopPropagation()}>
             <header className="sticky top-0 z-10 flex items-center gap-3 border-b border-line bg-white px-5 py-4"><FileText className="h-5 w-5 text-teal-700" /><div className="min-w-0 flex-1"><h2 className="truncate text-sm font-semibold text-ink">{selectedDocument.name}</h2><p className="text-xs text-slate-400">{selectedDocument.chunk_count} 个分段 · {formatBytes(selectedDocument.file_size)}</p></div><button title="关闭" onClick={() => setSelectedDocument(null)} className="grid h-8 w-8 place-items-center text-slate-500"><X className="h-4 w-4" /></button></header>
             <div className="space-y-3 p-4 sm:p-5">
               {chunks.map((chunk) => <article key={chunk.id} className="border border-line bg-white p-4 shadow-sm"><div className="mb-3 flex items-center justify-between"><span className="text-xs font-semibold text-teal-700">分段 #{chunk.position}</span><span className="text-xs text-slate-400">{chunk.character_count} 字符</span></div><p className="whitespace-pre-wrap text-sm leading-6 text-slate-700">{chunk.content}</p></article>)}

@@ -172,7 +172,7 @@ export function FeedbackControls({
               type="button"
               disabled={pending}
               onClick={() => void submit("unhelpful")}
-              className="flex h-8 shrink-0 items-center gap-1.5 rounded-md bg-slate-800 px-3 text-xs font-medium text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+              className="primary-button flex h-8 shrink-0 items-center gap-1.5 px-3 text-xs font-medium disabled:cursor-not-allowed disabled:opacity-50"
             >
               {pending && <LoaderCircle className="h-3.5 w-3.5 animate-spin" />}
               提交反馈

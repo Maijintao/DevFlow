@@ -1,8 +1,10 @@
+import asyncio
 import re
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from weakref import WeakValueDictionary
 
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
@@ -53,6 +55,8 @@ from app.services.rag.indexing import CI_LOG_CHUNK_CHARS, sanitize_ci_log
 from app.services.rag.retrieval import search_similar_documents
 from app.services.rag.source_policy import RAG_SOURCE_TYPES
 from app.services.rag.vector_store import MilvusUnavailableError
+
+_memory_seal_locks: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
 
 
 def _repo_filter(model: Any, repo_id: uuid.UUID | None) -> Any:
@@ -1115,60 +1119,64 @@ class SessionSealer:
         )
         self.db.add(session)
         self.db.flush()
+        self.db.commit()
 
-        errors: list[str] = []
-        memory_update = fallback_update
-        digest = fallback_digest
-        try:
-            memory_update = await self._build_memory_update(
-                user_message.content,
-                assistant_message.content,
-                route,
-                tool_calls,
-                fallback_digest,
-                repo_id=repo.id if repo else None,
-                conversation_id=conversation.id if conversation else None,
-            )
-            digest = str(memory_update.pop("_digest", "") or memory_update.get("summary") or fallback_digest)
-        except Exception as exc:  # model/network failures must not invalidate the completed chat turn
-            errors.append(f"memory_extraction_failed: {exc}")
+        lock_key = str(conversation.id) if conversation else str(repo.id if repo else "global")
+        lock = _memory_seal_locks.setdefault(lock_key, asyncio.Lock())
+        async with lock:
+            errors: list[str] = []
             memory_update = fallback_update
             digest = fallback_digest
-
-        try:
-            with self.db.begin_nested():
-                self._update_thread_memory(
-                    repo.id if repo else None,
-                    conversation.id if conversation else None,
-                    digest,
-                    memory_update,
-                )
-                capture_memory_candidates(
-                    self.db,
+            try:
+                memory_update = await self._build_memory_update(
+                    user_message.content,
+                    assistant_message.content,
+                    route,
+                    tool_calls,
+                    fallback_digest,
                     repo_id=repo.id if repo else None,
                     conversation_id=conversation.id if conversation else None,
-                    session_id=session.id,
-                    memory_update=memory_update,
                 )
-                self.db.flush()
-        except Exception as exc:  # keep raw ChatSession even when enrichment fails
-            errors.append(f"memory_persistence_failed: {exc}")
+                digest = str(memory_update.pop("_digest", "") or memory_update.get("summary") or fallback_digest)
+            except Exception as exc:  # model/network failures must not invalidate the completed chat turn
+                errors.append(f"memory_extraction_failed: {exc}")
+                memory_update = fallback_update
+                digest = fallback_digest
 
-        transcript = dict(session.transcript_json or {})
-        transcript["memory_update"] = {
-            key: value for key, value in memory_update.items() if not key.startswith("_")
-        }
-        transcript["sealing"] = {
-            "phase": "completed",
-            "errors": errors,
-            "evidence_refresh": "deferred_to_next_request",
-        }
-        session.transcript_json = transcript
-        session.digest = digest
-        session.status = "sealed_with_warnings" if errors else "sealed"
-        session.sealed_at = datetime.now(timezone.utc)
-        self.db.flush()
-        return session
+            try:
+                with self.db.begin_nested():
+                    self._update_thread_memory(
+                        repo.id if repo else None,
+                        conversation.id if conversation else None,
+                        digest,
+                        memory_update,
+                    )
+                    capture_memory_candidates(
+                        self.db,
+                        repo_id=repo.id if repo else None,
+                        conversation_id=conversation.id if conversation else None,
+                        session_id=session.id,
+                        memory_update=memory_update,
+                    )
+                    self.db.flush()
+            except Exception as exc:  # keep raw ChatSession even when enrichment fails
+                errors.append(f"memory_persistence_failed: {exc}")
+
+            transcript = dict(session.transcript_json or {})
+            transcript["memory_update"] = {
+                key: value for key, value in memory_update.items() if not key.startswith("_")
+            }
+            transcript["sealing"] = {
+                "phase": "completed",
+                "errors": errors,
+                "evidence_refresh": "deferred_to_next_request",
+            }
+            session.transcript_json = transcript
+            session.digest = digest
+            session.status = "sealed_with_warnings" if errors else "sealed"
+            session.sealed_at = datetime.now(timezone.utc)
+            self.db.commit()
+            return session
 
     async def _build_memory_update(
         self,

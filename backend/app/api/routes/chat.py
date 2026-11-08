@@ -1530,6 +1530,7 @@ async def _conversation_plan_execute_sse(payload: ChatPlanExecuteRequest, db: Se
         for index in range(0, len(result["answer"]), 48):
             yield encode_sse({"event": "delta", "data": {"content": result["answer"][index : index + 48]}})
 
+        yield encode_sse({"event": "saving", "data": {}})
         assistant_message = message_store.append(
             repo_id=repo.id,
             conversation_id=conversation.id,
@@ -1694,6 +1695,7 @@ async def _conversation_sse(payload: ChatRequest, db: Session):
     try:
         async for event in ChatAgent().run_stream({"message": payload.message}, context):
             if event["event"] == "final":
+                yield encode_sse({"event": "saving", "data": {}})
                 run_id = uuid.uuid4()
                 event["data"]["run_id"] = str(run_id)
                 event["data"]["compression_stats"] = assembled.compression_stats
