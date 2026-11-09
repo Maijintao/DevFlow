@@ -1,18 +1,21 @@
 import asyncio
 
-from fastapi import FastAPI
+import httpx
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import inspect, text
 
 from app.api.routes import (
     action_drafts,
+    auth,
     chat,
     ci,
     code_graph,
     conversations,
     evaluations,
     feedback,
+    github_collaboration,
     issues,
     knowledge,
     project_index,
@@ -27,7 +30,8 @@ from app.api.routes import (
 )
 from app.core.config import settings
 from app.db.models import Base
-from app.db.session import engine
+from app.db.session import SessionLocal, engine
+from app.services.access_control import authorize_request, current_user_id
 from app.services.scheduler import periodic_repo_sync_loop
 from app.services.rag.vector_store import MilvusUnavailableError
 
@@ -51,6 +55,39 @@ def create_app() -> FastAPI:
             status_code=503,
             content={"detail": str(exc), "service": "milvus", "status": "degraded"},
         )
+
+    @app.exception_handler(httpx.HTTPStatusError)
+    async def github_http_error_handler(_request, exc: httpx.HTTPStatusError) -> JSONResponse:
+        status = exc.response.status_code
+        if status == 401:
+            detail = "GitHub Token 无效或已过期，请重新关联"
+        elif status == 403:
+            detail = "GitHub 拒绝了操作，请检查账号、Token 和仓库权限"
+        elif status == 404:
+            detail = "GitHub 未找到仓库或内容，请检查账号权限"
+        elif status in {405, 409, 422}:
+            detail = "GitHub 未能完成操作，请检查分支、PR 状态及仓库规则"
+        else:
+            detail = f"GitHub 请求失败（HTTP {status}）"
+        return JSONResponse(status_code=status if 400 <= status <= 599 else 502, content={"detail": detail})
+    @app.middleware("http")
+    async def protect_api(request: Request, call_next):
+        path = request.url.path
+        if request.method == "OPTIONS" or not path.startswith("/api/") or path.startswith("/api/auth/") or path == "/api/webhooks/github":
+            return await call_next(request)
+        db = SessionLocal()
+        try:
+            user = await authorize_request(request, db)
+        except HTTPException as exc:
+            db.close()
+            return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+        db.close()
+        context = current_user_id.set(user.id)
+        try:
+            return await call_next(request)
+        finally:
+            current_user_id.reset(context)
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_cors_origins(),
@@ -60,6 +97,8 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
+    app.include_router(github_collaboration.router, prefix="/api/github", tags=["github_collaboration"])
     app.include_router(repos.router, prefix="/api/repos", tags=["repos"])
     app.include_router(conversations.router, prefix="/api/repos", tags=["conversations"])
     app.include_router(workspaces.router, prefix="/api/workspaces", tags=["workspaces"])

@@ -12,6 +12,7 @@ class Settings(BaseSettings):
 
     github_token: str | None = None
     github_api_base_url: str = "https://api.github.com"
+    login_session_hours: int = 8
 
     llm_api_key: str | None = None
     llm_base_url: str = "https://api.deepseek.com"
@@ -79,6 +80,8 @@ class Settings(BaseSettings):
     upload_dir: str = ".data/uploads"
 
     token_encryption_key: str = "change-me-in-local-dev"
+    personal_token_encryption_key: str | None = None
+    personal_token_key_file: str = ".data/secrets/personal-token.key"
     demo_mode: bool = True
     github_webhook_secret: str | None = None
     feishu_feedback_webhook_url: str | None = None

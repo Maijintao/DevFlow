@@ -31,7 +31,7 @@ from app.services.rag.retrieval import search_similar_documents
 from app.services.rag.vector_store import add_document
 from app.schemas.workflow import WorkflowSpec, WorkflowTask, WorkflowTaskResult
 from app.services.skills import SkillRegistry, get_skill_registry
-from app.services.permissions import ensure_demo_user, write_audit_log
+from app.services.permissions import require_current_user, write_audit_log
 
 router = APIRouter()
 
@@ -1252,7 +1252,7 @@ def _build_conversation_tools(repo: Repository | None, conversation: Conversatio
             "send_report": "send_report",
             "write_back": "comment",
         }.get(action, action)
-        user = ensure_demo_user(db)
+        user = require_current_user(db)
         action_draft = ActionDraft(
             repo_id=repo.id,
             draft_type=draft_type,

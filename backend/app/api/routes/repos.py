@@ -7,11 +7,11 @@ from pathlib import Path
 from urllib.parse import urlparse
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from app.db.models import ActionDraft, AgentRun, AgentTaskRun, AgentWorkflowRun, AnalysisResult, AuditLog, ChatFeedback, ChatMessage, ChatSession, CodeRelation, CodeSymbol, Conversation, ConversationMemory, Document, EvidenceItem, Issue, KnowledgeBaseConfig, KnowledgeGraphEdge, KnowledgeSourceDocument, MemoryCandidate, PRFile, PRReviewComment, ProjectIndexState, PullRequest, RecallEvent, Repository, RetrievalTestRun, ThreadMemory, WorkflowRun, Workspace
+from app.db.models import ActionDraft, AgentRun, AgentTaskRun, AgentWorkflowRun, AnalysisResult, AuditLog, ChatFeedback, ChatMessage, ChatSession, CodeRelation, CodeSymbol, Conversation, ConversationMemory, Document, EvidenceItem, Issue, KnowledgeBaseConfig, KnowledgeGraphEdge, KnowledgeSourceDocument, MemoryCandidate, PRFile, PRReviewComment, ProjectIndexState, ProjectMember, PullRequest, RecallEvent, Repository, RetrievalTestRun, ThreadMemory, WorkflowRun, Workspace
 from app.db.session import get_db
 from app.schemas.repos import RepoConnectRequest, RepoConnectResponse, RepoResponse, RepoSyncRequest, RepoSyncResponse
 from app.core.config import settings
@@ -155,7 +155,7 @@ def _clone_target_from_parent(raw_parent: str, repo_name: str) -> Path:
 
 
 @router.post("/connect", response_model=RepoConnectResponse)
-async def connect_repo(payload: RepoConnectRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)) -> RepoConnectResponse:
+async def connect_repo(payload: RepoConnectRequest, background_tasks: BackgroundTasks, request: Request, db: Session = Depends(get_db)) -> RepoConnectResponse:
     local_path = _clean_text(payload.local_path)
     clone_parent_dir = _clean_text(payload.clone_parent_dir)
     owner = _clean_text(payload.owner)
@@ -222,6 +222,9 @@ async def connect_repo(payload: RepoConnectRequest, background_tasks: Background
     repo.local_path = str(checkout_path) if checkout_path else None
     repo.checkout_mode = checkout_mode
     repo.github_id = repo_data.get("id")
+    db.flush()
+    if db.get(ProjectMember, (repo.id, request.state.user_id)) is None:
+        db.add(ProjectMember(repo_id=repo.id, user_id=request.state.user_id, role="leader"))
     db.commit()
     db.refresh(repo)
     sync_result: RepoSyncResponse | None = None
@@ -264,9 +267,11 @@ async def connect_repo(payload: RepoConnectRequest, background_tasks: Background
 
 
 @router.get("", response_model=list[RepoResponse])
-async def list_repos(db: Session = Depends(get_db)) -> list[Repository]:
+async def list_repos(request: Request, db: Session = Depends(get_db)) -> list[Repository]:
     return (
         db.query(Repository)
+        .join(ProjectMember, ProjectMember.repo_id == Repository.id)
+        .filter(ProjectMember.user_id == request.state.user_id)
         .filter(Repository.provider != "knowledge_base")
         .order_by(Repository.updated_at.desc())
         .all()

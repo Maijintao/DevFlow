@@ -280,6 +280,25 @@ async def get_issue(issue_id: UUID, db: Session = Depends(get_db)) -> Issue:
     return issue
 
 
+@router.get("/issues/{issue_id}/analysis/latest", response_model=IssueAnalysisResponse | None)
+async def get_latest_issue_analysis(issue_id: UUID, db: Session = Depends(get_db)) -> IssueAnalysisResponse | None:
+    if db.get(Issue, issue_id) is None:
+        raise HTTPException(status_code=404, detail="未找到 Issue")
+    analysis = (
+        db.query(AnalysisResult)
+        .filter(
+            AnalysisResult.target_type == "issue",
+            AnalysisResult.target_id == issue_id,
+            AnalysisResult.analysis_type == "issue_analysis",
+        )
+        .order_by(AnalysisResult.created_at.desc(), AnalysisResult.id.desc())
+        .first()
+    )
+    if analysis is None:
+        return None
+    return IssueAnalysisResponse(analysis_id=analysis.id, result=analysis.result_json)
+
+
 @router.post("/issues/{issue_id}/analyze", response_model=IssueAnalysisResponse)
 async def analyze_issue(
     issue_id: UUID,

@@ -5,6 +5,8 @@ DevFlow AI 是一个面向 GitHub PR / Issue 研发协作的全栈 AI Agent 项�
 ## 核心能力
 
 - 连接并同步 GitHub 仓库中的 Issue、Pull Request、PR 文件、Review 评论、Workflow Run、Job 和日志。
+- DevFlow 账号和项目角色：组长创建成员账号，成员关联自己的 GitHub Token，并按项目角色执行操作。
+- GitHub 协作：创建和领取 Issue，根据已推送的分支创建 PR，由组长确认后合并 PR。
 - Issue 分析：分类、优先级、复杂度、推荐负责人、重复候选和行动项。
 - PR 审查：摘要、关键变更、风险点、检查清单、测试建议和需要重点关注的文件。
 - CI 排障：失败类型、可能原因、排查步骤和相关上下文。
@@ -73,6 +75,10 @@ npm run dev
 - 后端：http://localhost:8000
 - API 文档：http://localhost:8000/docs
 - 前端：http://localhost:3000
+
+首次打开前端时，在运行后端的电脑上创建组长账号。组长可以在工作台的“团队”中创建成员账号并设置角色。每名成员登录后，点击侧边栏的个人账号，在账号设置中关联自己的 GitHub Token。Token 需要拥有相关仓库的访问权限以及对应操作权限。
+
+成员完成修改并将分支推送至 GitHub 后，可以在 Issue 详情中创建 PR；组长可以在 PR 详情中查看并确认合并。
 
 ## RAG 知识问答系统
 

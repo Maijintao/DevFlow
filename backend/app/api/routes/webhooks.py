@@ -15,7 +15,7 @@ router = APIRouter()
 
 def verify_signature(body: bytes, signature: str | None) -> None:
     if not settings.github_webhook_secret:
-        return
+        raise HTTPException(status_code=503, detail="尚未配置 GitHub webhook 密钥")
     if not signature or not signature.startswith("sha256="):
         raise HTTPException(status_code=401, detail="缺少 GitHub webhook 签名")
     expected = hmac.new(settings.github_webhook_secret.encode("utf-8"), body, hashlib.sha256).hexdigest()

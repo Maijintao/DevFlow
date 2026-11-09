@@ -5,7 +5,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, Request, UploadFile
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -13,6 +13,7 @@ from app.core.config import settings
 from app.db.models import (
     Document,
     KnowledgeSourceDocument,
+    ProjectMember,
     Repository,
     RetrievalTestRun,
 )
@@ -122,9 +123,11 @@ async def get_model_catalog() -> ModelCatalogResponse:
 
 
 @router.get("/repositories", response_model=list[KnowledgeBaseResponse])
-async def list_rag_repositories(db: Session = Depends(get_db)) -> list[KnowledgeBaseResponse]:
+async def list_rag_repositories(request: Request, db: Session = Depends(get_db)) -> list[KnowledgeBaseResponse]:
     repos = (
         db.query(Repository)
+        .join(ProjectMember, ProjectMember.repo_id == Repository.id)
+        .filter(ProjectMember.user_id == request.state.user_id)
         .filter(Repository.provider != "knowledge_base")
         .order_by(Repository.updated_at.desc())
         .all()

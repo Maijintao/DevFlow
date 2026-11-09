@@ -1,4 +1,5 @@
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -28,6 +29,21 @@ class GitHubClient:
             response.raise_for_status()
             return response.content
 
+    async def get_all(self, path: str) -> list[dict[str, Any]]:
+        url: str | None = f"{self.base_url}{path}"
+        expected = urlsplit(self.base_url)
+        items: list[dict[str, Any]] = []
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            while url:
+                current = urlsplit(url)
+                if (current.scheme, current.netloc) != (expected.scheme, expected.netloc):
+                    raise RuntimeError("GitHub 分页地址不属于当前服务")
+                response = await client.get(url, headers=self._headers(), params={"per_page": 100} if not items else None)
+                response.raise_for_status()
+                items.extend(response.json())
+                url = response.links.get("next", {}).get("url")
+        return items
+
     async def post(self, path: str, payload: dict[str, Any]) -> Any:
         async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
             response = await client.post(f"{self.base_url}{path}", headers=self._headers(), json=payload)
@@ -37,6 +53,12 @@ class GitHubClient:
     async def patch(self, path: str, payload: dict[str, Any]) -> Any:
         async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
             response = await client.patch(f"{self.base_url}{path}", headers=self._headers(), json=payload)
+            response.raise_for_status()
+            return response.json()
+
+    async def put(self, path: str, payload: dict[str, Any]) -> Any:
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            response = await client.put(f"{self.base_url}{path}", headers=self._headers(), json=payload)
             response.raise_for_status()
             return response.json()
 
