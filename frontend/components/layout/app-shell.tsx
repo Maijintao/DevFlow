@@ -174,8 +174,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     <main className="app-shell min-h-screen">
       <aside className="app-navigation">
         <Link href="/" className="app-brand" aria-label="DevFlow AI 首页">
-          <span className="app-brand-mark">DF</span>
-          <span>DevFlow AI</span>
+          <Image src="/devflow-logo.png" alt="" width={2172} height={724} className="app-brand-image" priority />
         </Link>
         <nav className="app-nav-items" aria-label="主要导航">
           {navItems.map((item) => (

@@ -56,27 +56,22 @@ textarea::placeholder {
 }
 
 .app-brand {
-  display: inline-flex;
+  position: relative;
+  display: block;
   flex: none;
-  align-items: center;
-  gap: 10px;
-  padding: 0 6px;
-  color: #0a0a0a;
-  font-size: 16px;
-  font-weight: 700;
-  white-space: nowrap;
+  width: 166px;
+  height: 36px;
+  overflow: hidden;
 }
 
-.app-brand-mark {
-  display: grid;
-  width: 32px;
-  height: 32px;
-  place-items: center;
-  border: 0;
-  border-radius: 50%;
-  background: #0a0a0a;
-  color: #fff;
-  font-size: 12px;
+.app-brand-image {
+  position: absolute;
+  top: 50%;
+  left: -14px;
+  width: 195px;
+  height: auto;
+  max-width: none;
+  transform: translateY(-50%);
 }
 
 .app-nav-items {
