@@ -1,18 +1,24 @@
 import asyncio
 
-from fastapi import FastAPI
+import httpx
+from alembic import command
+from alembic.config import Config
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import inspect, text
+from pathlib import Path
 
 from app.api.routes import (
     action_drafts,
+    auth,
     chat,
     ci,
     code_graph,
     conversations,
     evaluations,
     feedback,
+    github_collaboration,
     issues,
     knowledge,
     project_index,
@@ -27,8 +33,11 @@ from app.api.routes import (
 )
 from app.core.config import settings
 from app.db.models import Base
-from app.db.session import engine
+from app.db.session import SessionLocal, engine
+from app.services.access_control import authorize_request, current_user_id
 from app.services.scheduler import periodic_repo_sync_loop
+from app.services.issue_preflight import issue_poll_loop, issue_preflight_worker
+from app.services.pr_conflict import poll_loop as pr_conflict_poll_loop, worker as pr_conflict_worker
 from app.services.rag.vector_store import MilvusUnavailableError
 
 
@@ -51,6 +60,39 @@ def create_app() -> FastAPI:
             status_code=503,
             content={"detail": str(exc), "service": "milvus", "status": "degraded"},
         )
+
+    @app.exception_handler(httpx.HTTPStatusError)
+    async def github_http_error_handler(_request, exc: httpx.HTTPStatusError) -> JSONResponse:
+        status = exc.response.status_code
+        if status == 401:
+            detail = "GitHub Token 无效或已过期，请重新关联"
+        elif status == 403:
+            detail = "GitHub 拒绝了操作，请检查账号、Token 和仓库权限"
+        elif status == 404:
+            detail = "GitHub 未找到仓库或内容，请检查账号权限"
+        elif status in {405, 409, 422}:
+            detail = "GitHub 未能完成操作，请检查分支、PR 状态及仓库规则"
+        else:
+            detail = f"GitHub 请求失败（HTTP {status}）"
+        return JSONResponse(status_code=status if 400 <= status <= 599 else 502, content={"detail": detail})
+    @app.middleware("http")
+    async def protect_api(request: Request, call_next):
+        path = request.url.path
+        if request.method == "OPTIONS" or not path.startswith("/api/") or path.startswith("/api/auth/") or path == "/api/webhooks/github":
+            return await call_next(request)
+        db = SessionLocal()
+        try:
+            user = await authorize_request(request, db)
+        except HTTPException as exc:
+            db.close()
+            return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+        db.close()
+        context = current_user_id.set(user.id)
+        try:
+            return await call_next(request)
+        finally:
+            current_user_id.reset(context)
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_cors_origins(),
@@ -60,6 +102,8 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
+    app.include_router(github_collaboration.router, prefix="/api/github", tags=["github_collaboration"])
     app.include_router(repos.router, prefix="/api/repos", tags=["repos"])
     app.include_router(conversations.router, prefix="/api/repos", tags=["conversations"])
     app.include_router(workspaces.router, prefix="/api/workspaces", tags=["workspaces"])
@@ -85,7 +129,14 @@ def create_app() -> FastAPI:
     @app.on_event("startup")
     async def create_demo_tables() -> None:
         # 课程项目默认自动建表；生产风格流程会在后续加入 Alembic 迁移。
-        Base.metadata.create_all(bind=engine)
+        preflight_tables = {"issue_poll_cursors", "issue_preflight_jobs", "issue_preflight_scopes", "pr_conflict_checks", "pr_conflict_poll_states"}
+        Base.metadata.create_all(bind=engine, tables=[table for table in Base.metadata.sorted_tables if table.name not in preflight_tables])
+        migration_config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
+        with engine.begin() as connection:
+            if connection.dialect.name == "postgresql":
+                connection.execute(text("SELECT pg_advisory_xact_lock(hashtext('devflow_schema_migrations'))"))
+            migration_config.attributes["connection"] = connection
+            command.upgrade(migration_config, "head")
         inspector = inspect(engine)
         if "users" in inspector.get_table_names():
             columns = {column["name"] for column in inspector.get_columns("users")}
@@ -154,12 +205,30 @@ def create_app() -> FastAPI:
         delete_milvus_documents(source_types=["code_file"], strict=False)
         if settings.auto_sync_enabled:
             app.state.repo_sync_task = asyncio.create_task(periodic_repo_sync_loop())
+        if settings.issue_preflight_enabled:
+            app.state.issue_poll_task = asyncio.create_task(issue_poll_loop())
+            app.state.issue_preflight_tasks = [asyncio.create_task(issue_preflight_worker()) for _ in range(settings.issue_preflight_workers)]
+        if settings.pr_conflict_enabled:
+            app.state.pr_conflict_poll_task = asyncio.create_task(pr_conflict_poll_loop())
+            app.state.pr_conflict_tasks = [asyncio.create_task(pr_conflict_worker("check")) for _ in range(settings.pr_conflict_workers)]
+            app.state.pr_conflict_tasks += [asyncio.create_task(pr_conflict_worker("detail")) for _ in range(settings.pr_conflict_detail_workers)]
+            app.state.pr_conflict_tasks.append(asyncio.create_task(pr_conflict_worker("advice")))
 
     @app.on_event("shutdown")
     async def stop_background_tasks() -> None:
         task = getattr(app.state, "repo_sync_task", None)
         if task:
             task.cancel()
+        poll_task = getattr(app.state, "issue_poll_task", None)
+        if poll_task:
+            poll_task.cancel()
+        for worker in getattr(app.state, "issue_preflight_tasks", []):
+            worker.cancel()
+        pr_poll = getattr(app.state, "pr_conflict_poll_task", None)
+        if pr_poll:
+            pr_poll.cancel()
+        for worker in getattr(app.state, "pr_conflict_tasks", []):
+            worker.cancel()
 
     return app
 

@@ -1,7 +1,12 @@
-export const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+const configuredApiBaseUrl = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+const apiUrl = new URL(configuredApiBaseUrl);
+if (typeof window !== "undefined" && ["localhost", "127.0.0.1"].includes(apiUrl.hostname) && ["localhost", "127.0.0.1"].includes(window.location.hostname)) {
+  apiUrl.hostname = window.location.hostname;
+}
+export const API_BASE_URL = apiUrl.toString().replace(/\/$/, "");
 
 export async function apiGet<T>(path: string): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, { cache: "no-store" });
+  const response = await fetch(`${API_BASE_URL}${path}`, { cache: "no-store", credentials: "include" });
   if (!response.ok) await throwApiError(response);
   return response.json();
 }
@@ -9,6 +14,7 @@ export async function apiGet<T>(path: string): Promise<T> {
 export async function apiPost<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
+    credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body)
   });
@@ -19,6 +25,18 @@ export async function apiPost<T>(path: string, body: unknown): Promise<T> {
 export async function apiPatch<T>(path: string, body: unknown): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "PATCH",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body)
+  });
+  if (!response.ok) await throwApiError(response);
+  return response.json();
+}
+
+export async function apiPut<T>(path: string, body: unknown): Promise<T> {
+  const response = await fetch(`${API_BASE_URL}${path}`, {
+    method: "PUT",
+    credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body)
   });
@@ -29,6 +47,7 @@ export async function apiPatch<T>(path: string, body: unknown): Promise<T> {
 export async function apiUpload<T>(path: string, body: FormData): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
+    credentials: "include",
     body
   });
   if (!response.ok) await throwApiError(response);
@@ -43,6 +62,7 @@ export async function apiPostStream(
 ): Promise<void> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
     method: "POST",
+    credentials: "include",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
     signal: options.signal
@@ -73,7 +93,7 @@ export async function apiPostStream(
 }
 
 export async function apiDelete<T>(path: string): Promise<T> {
-  const response = await fetch(`${API_BASE_URL}${path}`, { method: "DELETE" });
+  const response = await fetch(`${API_BASE_URL}${path}`, { method: "DELETE", credentials: "include" });
   if (!response.ok) await throwApiError(response);
   return response.json();
 }

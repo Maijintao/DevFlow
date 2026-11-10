@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, BigInteger, DateTime, Float, ForeignKey, Integer, String, Text, Uuid, func
+from sqlalchemy import JSON, BigInteger, Boolean, DateTime, Float, ForeignKey, Integer, String, Text, Uuid, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
@@ -16,6 +16,46 @@ class User(Base):
     role: Mapped[str] = mapped_column(String(80), default="owner", index=True)
     github_token_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class GitHubIdentity(Base):
+    __tablename__ = "github_identities"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    github_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
+    login: Mapped[str] = mapped_column(String(200), index=True)
+    access_token_encrypted: Mapped[str] = mapped_column(Text)
+
+
+class UserProfile(Base):
+    __tablename__ = "user_profiles"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    avatar_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class LoginSession(Base):
+    __tablename__ = "login_sessions"
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), index=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class LocalCredential(Base):
+    __tablename__ = "local_credentials"
+
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    username: Mapped[str] = mapped_column(String(200), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(Text)
+    is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class BootstrapState(Base):
+    __tablename__ = "bootstrap_state"
+
+    name: Mapped[str] = mapped_column(String(40), primary_key=True)
 
 
 class Repository(Base):
@@ -41,6 +81,15 @@ class Repository(Base):
     issues: Mapped[list["Issue"]] = relationship(back_populates="repo", cascade="all, delete-orphan")
     pull_requests: Mapped[list["PullRequest"]] = relationship(back_populates="repo", cascade="all, delete-orphan")
     workflow_runs: Mapped[list["WorkflowRun"]] = relationship(back_populates="repo", cascade="all, delete-orphan")
+
+
+class ProjectMember(Base):
+    __tablename__ = "project_members"
+
+    repo_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("repositories.id", ondelete="CASCADE"), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), primary_key=True)
+    role: Mapped[str] = mapped_column(String(40), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class Workspace(Base):
@@ -106,6 +155,46 @@ class Issue(Base):
     repo: Mapped[Repository] = relationship(back_populates="issues")
 
 
+class IssuePollCursor(Base):
+    __tablename__ = "issue_poll_cursors"
+
+    repo_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("repositories.id", ondelete="CASCADE"), primary_key=True)
+    synced_through: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    remote_commit_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    remote_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class IssuePreflightJob(Base):
+    __tablename__ = "issue_preflight_jobs"
+
+    id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    issue_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("issues.id", ondelete="CASCADE"), index=True)
+    fingerprint: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="pending", index=True)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    base_commit_sha: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    working_tree_dirty: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    analyzer_version: Mapped[str] = mapped_column(String(40))
+    result_json: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class IssuePreflightScope(Base):
+    __tablename__ = "issue_preflight_scopes"
+
+    issue_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("issues.id", ondelete="CASCADE"), primary_key=True)
+    paths: Mapped[list[str]] = mapped_column(JSON, default=list)
+    updated_by: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
 class PullRequest(Base):
     __tablename__ = "pull_requests"
 
@@ -126,6 +215,39 @@ class PullRequest(Base):
     repo: Mapped[Repository] = relationship(back_populates="pull_requests")
     files: Mapped[list["PRFile"]] = relationship(back_populates="pr", cascade="all, delete-orphan")
     review_comments: Mapped[list["PRReviewComment"]] = relationship(back_populates="pr", cascade="all, delete-orphan")
+
+
+class PRConflictCheck(Base):
+    __tablename__ = "pr_conflict_checks"
+
+    pr_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("pull_requests.id", ondelete="CASCADE"), primary_key=True)
+    head_sha: Mapped[str] = mapped_column(String(64))
+    base_sha: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(24), default="pending", index=True)
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    detail_status: Mapped[str] = mapped_column(String(24), default="waiting", index=True)
+    detail_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    detail_lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    detail_lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    conflict_files: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    related_prs: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    advice_status: Mapped[str] = mapped_column(String(24), default="waiting", index=True)
+    advice_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    advice_lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    advice_lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    advice: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+
+
+class PRConflictPollState(Base):
+    __tablename__ = "pr_conflict_poll_states"
+
+    repo_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("repositories.id", ondelete="CASCADE"), primary_key=True)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class PRFile(Base):

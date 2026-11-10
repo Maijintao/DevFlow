@@ -1,30 +1,28 @@
 from collections.abc import Callable
 
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from app.db.models import AuditLog, User
 from app.db.session import get_db
+from app.services.access_control import current_user_id
 
 ROLE_PERMISSIONS: dict[str, set[str]] = {
     "owner": {"repo:read", "repo:sync", "agent:run", "draft:create", "draft:approve", "eval:read", "settings:manage"},
     "maintainer": {"repo:read", "repo:sync", "agent:run", "draft:create", "draft:approve", "eval:read"},
     "developer": {"repo:read", "agent:run", "draft:create", "eval:read"},
     "viewer": {"repo:read", "eval:read"},
+    "product_manager": {"repo:read", "agent:run", "draft:create", "eval:read"},
 }
 
 
-def ensure_demo_user(db: Session) -> User:
-    user = db.query(User).order_by(User.created_at.asc()).first()
+def require_current_user(db: Session) -> User:
+    user_id = current_user_id.get()
+    if user_id is None:
+        raise HTTPException(status_code=401, detail="请先登录")
+    user = db.get(User, user_id)
     if user is None:
-        user = User(name="demo-owner", role="owner")
-        db.add(user)
-        db.commit()
-        db.refresh(user)
-    if not getattr(user, "role", None):
-        user.role = "owner"
-        db.commit()
-        db.refresh(user)
+        raise HTTPException(status_code=401, detail="登录账号不存在")
     return user
 
 
@@ -33,9 +31,14 @@ def has_permission(user: User, permission: str) -> bool:
 
 
 def require_permission(permission: str) -> Callable:
-    def dependency(db: Session = Depends(get_db)) -> User:
-        user = ensure_demo_user(db)
-        if not has_permission(user, permission):
+    def dependency(request: Request, db: Session = Depends(get_db)) -> User:
+        user_id = getattr(request.state, "user_id", None)
+        user = db.get(User, user_id) if user_id else None
+        if user is None:
+            raise HTTPException(status_code=401, detail="请先登录")
+        role = getattr(request.state, "project_role", None)
+        role_key = {"leader": "owner", "developer": "developer", "product_manager": "product_manager"}.get(role, "viewer")
+        if permission not in ROLE_PERMISSIONS.get(role_key, set()):
             raise HTTPException(status_code=403, detail=f"需要权限：{permission}")
         return user
 

@@ -22,7 +22,7 @@ async def periodic_repo_sync_loop() -> None:
 
         for repo_id in repo_ids:
             try:
-                await sync_repository_by_id(repo_id, RepoSyncRequest(limit=settings.auto_sync_limit))
+                await sync_repository_by_id(repo_id, RepoSyncRequest(limit=settings.auto_sync_limit, sync_issues=not settings.issue_preflight_enabled))
             except Exception as exc:
                 logger.warning("Periodic repo sync failed for %s: %s", repo_id, exc)
 

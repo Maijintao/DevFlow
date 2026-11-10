@@ -31,7 +31,7 @@ from app.services.rag.retrieval import search_similar_documents
 from app.services.rag.vector_store import add_document
 from app.schemas.workflow import WorkflowSpec, WorkflowTask, WorkflowTaskResult
 from app.services.skills import SkillRegistry, get_skill_registry
-from app.services.permissions import ensure_demo_user, write_audit_log
+from app.services.permissions import require_current_user, write_audit_log
 
 router = APIRouter()
 
@@ -1252,7 +1252,7 @@ def _build_conversation_tools(repo: Repository | None, conversation: Conversatio
             "send_report": "send_report",
             "write_back": "comment",
         }.get(action, action)
-        user = ensure_demo_user(db)
+        user = require_current_user(db)
         action_draft = ActionDraft(
             repo_id=repo.id,
             draft_type=draft_type,
@@ -1530,6 +1530,7 @@ async def _conversation_plan_execute_sse(payload: ChatPlanExecuteRequest, db: Se
         for index in range(0, len(result["answer"]), 48):
             yield encode_sse({"event": "delta", "data": {"content": result["answer"][index : index + 48]}})
 
+        yield encode_sse({"event": "saving", "data": {}})
         assistant_message = message_store.append(
             repo_id=repo.id,
             conversation_id=conversation.id,
@@ -1694,6 +1695,7 @@ async def _conversation_sse(payload: ChatRequest, db: Session):
     try:
         async for event in ChatAgent().run_stream({"message": payload.message}, context):
             if event["event"] == "final":
+                yield encode_sse({"event": "saving", "data": {}})
                 run_id = uuid.uuid4()
                 event["data"]["run_id"] = str(run_id)
                 event["data"]["compression_stats"] = assembled.compression_stats

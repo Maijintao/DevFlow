@@ -9,7 +9,7 @@ from app.db.models import AgentRun, ChatFeedback, ChatMessage, ChatSession, Conv
 from app.db.session import get_db
 from app.schemas.feedback import ChatFeedbackCreate, ChatFeedbackResponse, ChatFeedbackReview
 from app.services.feedback_notifications import send_negative_feedback_notification
-from app.services.permissions import ensure_demo_user
+from app.services.permissions import require_current_user
 
 router = APIRouter()
 
@@ -168,7 +168,7 @@ async def create_feedback(payload: ChatFeedbackCreate, db: Session = Depends(get
     message = _message_or_404(db, payload)
     run_id = _run_id_from_message(message)
     run = db.get(AgentRun, run_id) if run_id else None
-    reporter = ensure_demo_user(db)
+    reporter = require_current_user(db)
 
     feedback = db.query(ChatFeedback).filter(ChatFeedback.assistant_message_id == message.id).one_or_none()
     notify = payload.rating == "unhelpful" and (feedback is None or feedback.rating != "unhelpful" or feedback.notified_at is None)

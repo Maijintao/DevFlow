@@ -12,6 +12,7 @@ class Settings(BaseSettings):
 
     github_token: str | None = None
     github_api_base_url: str = "https://api.github.com"
+    login_session_hours: int = 8
 
     llm_api_key: str | None = None
     llm_base_url: str = "https://api.deepseek.com"
@@ -79,6 +80,8 @@ class Settings(BaseSettings):
     upload_dir: str = ".data/uploads"
 
     token_encryption_key: str = "change-me-in-local-dev"
+    personal_token_encryption_key: str | None = None
+    personal_token_key_file: str = ".data/secrets/personal-token.key"
     demo_mode: bool = True
     github_webhook_secret: str | None = None
     feishu_feedback_webhook_url: str | None = None
@@ -86,6 +89,18 @@ class Settings(BaseSettings):
     auto_sync_enabled: bool = True
     auto_sync_interval_seconds: int = 300
     auto_sync_limit: int = 50
+    issue_preflight_enabled: bool = True
+    issue_poll_interval_seconds: int = 60
+    issue_poll_overlap_seconds: int = 120
+    issue_preflight_workers: int = 2
+    issue_preflight_max_attempts: int = 3
+    issue_preflight_lease_seconds: int = 300
+    pr_conflict_enabled: bool = True
+    pr_conflict_poll_interval_seconds: int = 60
+    pr_conflict_retry_seconds: int = 5
+    pr_conflict_workers: int = 2
+    pr_conflict_detail_workers: int = 1
+    pr_conflict_lease_seconds: int = 300
 
     model_config = SettingsConfigDict(env_file=("../.env", ".env"), env_file_encoding="utf-8", extra="ignore")
 

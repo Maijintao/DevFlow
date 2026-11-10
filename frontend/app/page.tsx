@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -31,9 +32,9 @@ import {
   XCircle,
   type LucideIcon
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState, type MouseEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 
-import { apiDelete, apiGet, apiPost, apiPostStream, apiUpload } from "@/lib/api";
+import { apiDelete, apiGet, apiPost, apiPostStream, apiPut, apiUpload } from "@/lib/api";
 import type { Repository } from "@/lib/types";
 import { FeedbackControls, type ChatFeedbackRecord } from "@/components/feedback-controls";
 
@@ -48,6 +49,15 @@ type Issue = {
   assignees?: string[];
   created_at?: string | null;
   updated_at?: string | null;
+};
+
+type ProjectAccount = {
+  user_id: string;
+  username: string;
+  name: string;
+  avatar_url: string | null;
+  github_login: string | null;
+  role: string;
 };
 
 type PRFile = {
@@ -71,6 +81,7 @@ type PullRequest = {
   merged_at?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
+  conflict_status?: string | null;
   files?: PRFile[];
 };
 
@@ -325,6 +336,7 @@ type ChatMessage = {
   traceItems?: ChatTraceItem[];
   traceCollapsed?: boolean;
   responsePending?: boolean;
+  savingResponse?: boolean;
   compressionStats?: Record<string, unknown>;
   progressiveCompaction?: Record<string, unknown>;
   modelUsage?: Array<Record<string, unknown>>;
@@ -867,30 +879,32 @@ function formatRelativeTime(value?: string | null) {
 }
 
 const issueCategoryMeta = [
-  { key: "unanswered", label: "未回复", color: "text-[#f47b5b]" },
-  { key: "discussing", label: "讨论中", color: "text-[#38a7f4]" },
-  { key: "decision", label: "待决策", color: "text-[#f08a00]" },
-  { key: "accepted", label: "已处理", color: "text-[#20a35b]" },
-  { key: "rejected", label: "已拒绝", color: "text-[#6b7280]" },
-  { key: "closed", label: "已关闭", color: "text-[#7c8794]" }
+  { key: "unanswered", label: "未回复" },
+  { key: "discussing", label: "讨论中" },
+  { key: "decision", label: "待决策" },
+  { key: "accepted", label: "已处理" },
+  { key: "rejected", label: "已拒绝" },
+  { key: "closed", label: "已关闭" }
 ] as const;
 
 const prCategoryMeta = [
-  { key: "reviewing", label: "审核中", color: "text-[#38a7f4]" },
-  { key: "needsOwner", label: "需主审", color: "text-[#f08a00]" },
-  { key: "conflict", label: "有冲突", color: "text-[#f47b5b]" },
-  { key: "done", label: "已完成", color: "text-[#20a35b]" },
-  { key: "rejected", label: "已拒绝", color: "text-[#6b7280]" }
+  { key: "reviewing", label: "审核中" },
+  { key: "needsOwner", label: "需主审" },
+  { key: "conflict", label: "有冲突" },
+  { key: "done", label: "已完成" },
+  { key: "rejected", label: "已拒绝" }
 ] as const;
 
 export default function DashboardPage() {
   const [repos, setRepos] = useState<Repository[]>([]);
+  const [repoLoadState, setRepoLoadState] = useState<"loading" | "ready" | "error">("loading");
   const [selectedRepoId, setSelectedRepoId] = useState("");
   const [conversationMap, setConversationMap] = useState<Record<string, ProjectConversation[]>>({});
   const [selectedConversationId, setSelectedConversationId] = useState("");
   const [expandedRepoIds, setExpandedRepoIds] = useState<Record<string, boolean>>({});
   const [issues, setIssues] = useState<Issue[]>([]);
   const [prs, setPrs] = useState<PullRequest[]>([]);
+  const [prRefreshError, setPrRefreshError] = useState("");
   const [runs, setRuns] = useState<WorkflowRun[]>([]);
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -942,6 +956,7 @@ export default function DashboardPage() {
   const [issueAnalysisById, setIssueAnalysisById] = useState<Record<string, IssueAnalysisResponse>>({});
   const [issueAnalysisTraceById, setIssueAnalysisTraceById] = useState<Record<string, IssueAnalysisTraceItem[]>>({});
   const [analysisModalIssueId, setAnalysisModalIssueId] = useState<string | null>(null);
+  const [loadingIssueAnalysisId, setLoadingIssueAnalysisId] = useState<string | null>(null);
   const [analyzingIssueId, setAnalyzingIssueId] = useState<string | null>(null);
   const [issueAnalysisError, setIssueAnalysisError] = useState<string | null>(null);
   const [prAnalysisById, setPrAnalysisById] = useState<Record<string, PRAnalysisResponse>>({});
@@ -958,6 +973,7 @@ export default function DashboardPage() {
   const skipHistoryLoadRef = useRef(false);
   const preserveWorkspaceSelectionRef = useRef(false);
   const streamAbortRef = useRef<AbortController | null>(null);
+  const activeIssueModalRef = useRef<string | null>(null);
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const promptRowRef = useRef<HTMLDivElement>(null);
   const promptMeasureRef = useRef<HTMLDivElement>(null);
@@ -1067,14 +1083,31 @@ export default function DashboardPage() {
     }
   }
 
-  async function analyzeIssue(issue: Issue) {
+  async function openIssueAnalysis(issue: Issue) {
+    activeIssueModalRef.current = issue.id;
     setAnalysisModalIssueId(issue.id);
     setIssueAnalysisError(null);
-    setIssueAnalysisById((items) => {
-      const next = { ...items };
-      delete next[issue.id];
-      return next;
-    });
+    if (issueAnalysisById[issue.id] || analyzingIssueId === issue.id) return;
+    setLoadingIssueAnalysisId(issue.id);
+    try {
+      const saved = await apiGet<IssueAnalysisResponse | null>(`/api/issues/${issue.id}/analysis/latest`);
+      if (activeIssueModalRef.current !== issue.id) return;
+      if (saved) {
+        setIssueAnalysisById((items) => ({ ...items, [issue.id]: saved }));
+      } else {
+        await analyzeIssue(issue);
+      }
+    } catch (error) {
+      if (activeIssueModalRef.current === issue.id) setIssueAnalysisError(getFriendlyError(error));
+    } finally {
+      setLoadingIssueAnalysisId((current) => (current === issue.id ? null : current));
+    }
+  }
+
+  async function analyzeIssue(issue: Issue) {
+    activeIssueModalRef.current = issue.id;
+    setAnalysisModalIssueId(issue.id);
+    setIssueAnalysisError(null);
     setIssueAnalysisTraceById((items) => ({
       ...items,
       [issue.id]: [
@@ -1584,9 +1617,28 @@ export default function DashboardPage() {
     );
   }
 
+  function refreshRepoList() {
+    setRepoLoadState("loading");
+    loadRepos()
+      .then(() => setRepoLoadState("ready"))
+      .catch(() => setRepoLoadState("error"));
+  }
+
   useEffect(() => {
-    loadRepos().catch(() => setRepos([]));
+    refreshRepoList();
   }, []);
+
+  useEffect(() => {
+    if (!selectedRepo?.id || workspaceTab !== "PR") return;
+    let active = true;
+    const repoId = selectedRepo.id;
+    async function refreshPullRequests() {
+      const items = await apiGet<PullRequest[]>(`/api/repos/${repoId}/pull-requests`);
+      if (active) { setPrs(items); setPrRefreshError(""); }
+    }
+    const timer = window.setInterval(() => { void refreshPullRequests().catch((reason) => { if (active) setPrRefreshError(getFriendlyError(reason)); }); }, 10000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [selectedRepo?.id, workspaceTab]);
 
   useEffect(() => {
     if (workspaceTab === "技能&MCP" && !mcpRuntime && !skillRuntimeLoading) {
@@ -1663,6 +1715,7 @@ export default function DashboardPage() {
     setGraphQuery("");
     setHiddenGraphNodeTypes({});
     setHiddenGraphRelations({});
+    activeIssueModalRef.current = null;
     setAnalysisModalIssueId(null);
     setIssueAnalysisError(null);
     setAnalysisModalPrId(null);
@@ -2003,7 +2056,7 @@ export default function DashboardPage() {
       items.map((item) => {
         if (item.id !== assistantId) return item;
         const content = item.content.trim() ? `${item.content.trim()}\n\n已停止响应。` : "已停止响应。";
-        return { ...item, content, responsePending: false, traceCollapsed: true };
+        return { ...item, content, responsePending: false, savingResponse: false, traceCollapsed: true };
       })
     );
   }
@@ -2158,6 +2211,12 @@ export default function DashboardPage() {
           );
           return;
         }
+        if (event === "saving") {
+          setMessages((items) => items.map((item) =>
+            item.id === assistantId ? { ...item, responsePending: false, savingResponse: true, traceCollapsed: true } : item
+          ));
+          return;
+        }
         if (event === "final") {
           const data = rawData as ChatStreamFinal;
           setMessages((items) =>
@@ -2176,7 +2235,8 @@ export default function DashboardPage() {
                     messageId: data.message_id,
                     contextCollapsed: true,
                     traceCollapsed: true,
-                    responsePending: false
+                    responsePending: false,
+                    savingResponse: false
                   }
                 : item
             )
@@ -2200,7 +2260,7 @@ export default function DashboardPage() {
     } finally {
       setMessages((items) =>
         items.map((item) =>
-          item.id === assistantId ? { ...item, traceCollapsed: true, responsePending: false } : item
+          item.id === assistantId ? { ...item, traceCollapsed: true, responsePending: false, savingResponse: false } : item
         )
       );
       if (streamAbortRef.current === abortController) {
@@ -2332,6 +2392,12 @@ export default function DashboardPage() {
           );
           return;
         }
+        if (event === "saving") {
+          setMessages((items) => items.map((item) =>
+            item.id === messageId ? { ...item, responsePending: false, savingResponse: true, traceCollapsed: true } : item
+          ));
+          return;
+        }
         if (event === "final") {
           const data = rawData as ChatStreamFinal;
           setMessages((items) =>
@@ -2346,6 +2412,7 @@ export default function DashboardPage() {
                     messageId: data.message_id,
                     traceCollapsed: true,
                     responsePending: false,
+                    savingResponse: false,
                     planStatus: data.route === "error" ? "error" : "done"
                   }
                 : item
@@ -2375,7 +2442,7 @@ export default function DashboardPage() {
     } finally {
       setMessages((items) =>
         items.map((item) =>
-          item.id === messageId ? { ...item, traceCollapsed: true, responsePending: false } : item
+          item.id === messageId ? { ...item, traceCollapsed: true, responsePending: false, savingResponse: false } : item
         )
       );
       if (streamAbortRef.current === abortController) {
@@ -2459,17 +2526,16 @@ export default function DashboardPage() {
 
   return (
     <div
-      className="relative grid h-[calc(100vh-24px)] min-h-0 overflow-hidden rounded-lg border border-line bg-white/80 shadow-sm"
-      style={{ gridTemplateColumns: `${isSidebarCollapsed ? "56px" : "300px"} minmax(0,1fr)`, transition: "grid-template-columns 260ms ease" }}
+      className="workspace-shell relative grid min-h-0 overflow-hidden"
+      style={{ gridTemplateColumns: `${isSidebarCollapsed ? "56px" : "220px"} minmax(0,1fr)`, transition: "grid-template-columns 260ms ease" }}
     >
-      <aside className="flex min-h-0 min-w-0 flex-col overflow-hidden border-r border-line bg-[#fbf7f2] transition-all duration-300">
-        <div className={`border-b border-line ${isSidebarCollapsed ? "p-2" : "p-4"}`}>
+      <aside className="workspace-sidebar flex min-h-0 min-w-0 flex-col overflow-hidden transition-all duration-300">
+        <div className={`workspace-sidebar-header ${isSidebarCollapsed ? "p-2" : "p-3"}`}>
           <div className={`flex items-center ${isSidebarCollapsed ? "flex-col gap-3" : "gap-3"}`}>
-            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-md bg-accent text-sm font-bold text-white">DF</div>
             {!isSidebarCollapsed && (
               <div className="min-w-0 flex-1">
-                <div className="text-sm font-semibold text-ink">DevFlow AI</div>
-                <div className="truncate text-xs text-slate-500">研发团队 PR / Issue 智能协作 Agent</div>
+                <div className="text-sm font-semibold text-ink">项目与会话</div>
+                <div className="mt-1 truncate text-xs text-slate-500">选择项目开始协作</div>
               </div>
             )}
             <button
@@ -2496,11 +2562,8 @@ export default function DashboardPage() {
               </button>
             </div>
           ) : (
-            <div className="mt-5 flex items-center justify-between">
-              <div>
-                <div className="text-xs font-medium uppercase tracking-[0.18em] text-accent">Projects</div>
-                <h2 className="mt-1 text-lg font-semibold text-ink">项目</h2>
-              </div>
+            <div className="mt-3 flex items-center justify-between">
+              <h2 className="text-sm font-semibold text-ink">项目</h2>
               <button onClick={openAddProject} className="inline-flex items-center gap-1 rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white">
                 <Plus className="h-3.5 w-3.5" />
                 添加项目
@@ -2510,8 +2573,14 @@ export default function DashboardPage() {
         </div>
 
         <div className={`min-h-0 flex-1 overflow-y-auto ${isSidebarCollapsed ? "p-2" : "px-3 py-2"}`}>
-          {repos.length === 0 && !isSidebarCollapsed && <div className="rounded-md bg-white p-3 text-sm leading-6 text-slate-600">还没有项目。请先添加一个项目。</div>}
-          {!isSidebarCollapsed && repos.length > 0 && <div className="mb-2 px-1 text-xs text-slate-400">项目</div>}
+          {!isSidebarCollapsed && repoLoadState === "loading" && <div className="rounded-md bg-white p-3 text-sm leading-6 text-slate-600">正在读取项目...</div>}
+          {!isSidebarCollapsed && repoLoadState === "error" && (
+            <div className="rounded-md border border-line bg-white p-3 text-sm leading-6 text-slate-600">
+              项目列表读取失败，请检查后端服务。
+              <button type="button" onClick={refreshRepoList} className="mt-2 block text-sm text-ink underline">重新读取</button>
+            </div>
+          )}
+          {!isSidebarCollapsed && repoLoadState === "ready" && repos.length === 0 && <div className="rounded-md bg-white p-3 text-sm leading-6 text-slate-600">还没有项目。请先添加一个项目。</div>}
           {repos.map((repo) => {
             const conversations = conversationMap[repo.id] ?? [];
             const isExpanded = expandedRepoIds[repo.id] ?? selectedRepo?.id === repo.id;
@@ -2529,7 +2598,7 @@ export default function DashboardPage() {
               </button>
             ) : (
               <div key={repo.id} className="mb-1">
-                <div className={`group flex h-9 items-center gap-1 rounded-md px-1 transition ${isSelectedRepo ? "bg-[#ecebea]" : "hover:bg-[#eeeeec]"}`}>
+                <div className={`group flex h-9 items-center gap-1 rounded-md px-1 transition ${isSelectedRepo ? "bg-panel" : "hover:bg-slate-50"}`}>
                   <button onClick={() => selectProject(repo).catch(() => undefined)} className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-slate-500 transition hover:bg-white">
                     <ChevronDown className={`h-3.5 w-3.5 transition ${isExpanded ? "" : "-rotate-90"}`} />
                   </button>
@@ -2606,10 +2675,10 @@ export default function DashboardPage() {
       </aside>
 
       <section
-        className="grid min-h-0 min-w-0 bg-[#fffaf6]"
-        style={{ gridTemplateColumns: `minmax(460px,1fr) 8px ${workspaceWidth}px`, gridTemplateRows: "auto minmax(0,1fr)" }}
+        className="workspace-main grid min-h-0 min-w-0"
+        style={{ gridTemplateColumns: `minmax(0,1fr) 6px minmax(280px,${workspaceWidth}px)`, gridTemplateRows: "auto minmax(0,1fr)" }}
       >
-        <section className="col-start-1 row-start-1 shrink-0 border-b border-line bg-white/90 px-4 py-2">
+        <section className="workspace-overview col-start-1 row-start-1 shrink-0 px-4 py-2">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <div className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1">
@@ -2620,13 +2689,12 @@ export default function DashboardPage() {
               </div>
             </div>
             <div className="flex shrink-0 items-center gap-3">
-              <div className="rounded-full border border-teal-200 bg-teal-50 px-3 py-1 text-xs font-medium text-teal-800">Production Workspace</div>
-              <button onClick={openAddProject} className="text-xs text-accent hover:underline">
+              <button onClick={openAddProject} className="text-xs text-ink hover:underline">
                 管理项目
               </button>
             </div>
           </div>
-          <div className="mt-2 grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-6">
+          <div className="workspace-stats mt-3 grid gap-2">
             <MetricCard icon={ListTodo} label="待处理 Issue" value={openIssues.length} />
             <MetricCard icon={GitPullRequest} label="待 Review PR" value={openPrs.length} />
             <MetricCard icon={CheckCircle2} label="已处理 Issue" value={handledIssues.length} />
@@ -2636,10 +2704,10 @@ export default function DashboardPage() {
           </div>
         </section>
 
-        <div className="col-start-2 row-span-2 row-start-1 cursor-col-resize border-x border-line bg-slate-100 transition hover:bg-teal-100" onMouseDown={startResize} title="拖拽调整 Workspace 宽度" />
+        <div className="workspace-resizer col-start-2 row-span-2 row-start-1 cursor-col-resize border-x transition hover:bg-teal-100" onMouseDown={startResize} title="拖拽调整 Workspace 宽度" />
 
-        <aside className="col-start-3 row-span-2 row-start-1 flex min-h-0 min-w-0 flex-col bg-[#fffaf6]">
-          <div className="border-b border-line bg-white/80 px-4 py-3">
+        <aside className="workspace-panel col-start-3 row-span-2 row-start-1 flex min-h-0 min-w-0 flex-col">
+          <div className="workspace-panel-header px-4 py-3">
             <div className="flex items-center justify-between gap-3">
               <h2 className="font-semibold text-ink">Workspace</h2>
               <div className="flex shrink-0 items-center gap-2">
@@ -2658,10 +2726,11 @@ export default function DashboardPage() {
                 </button>
               </div>
             </div>
-            <div className="mt-3 flex gap-1 overflow-x-auto">
+            <div className="workspace-tabs mt-3 flex gap-1 overflow-x-auto">
               {workspaceTabs.map((tab) => (
                 <button
                   key={tab}
+                  aria-pressed={workspaceTab === tab}
                   onClick={() => {
                     if (tab === "图谱" && selectedRepo && selectedWorkspaceItem) {
                       const center = workspaceSelectionToGraphCenter(selectedWorkspaceItem);
@@ -2709,21 +2778,24 @@ export default function DashboardPage() {
 
           {hasWorkspaceDetail && (
             <WorkspaceDetail
+              repo={selectedRepo}
               issue={selectedIssue}
               pr={selectedPr}
               run={selectedRun}
-              analyzingIssue={Boolean(selectedIssue && analyzingIssueId === selectedIssue.id)}
+              analyzingIssue={Boolean(selectedIssue && (analyzingIssueId === selectedIssue.id || loadingIssueAnalysisId === selectedIssue.id))}
               analyzingPr={Boolean(selectedPr && analyzingPrId === selectedPr.id)}
               analyzingRun={Boolean(selectedRun && analyzingRunId === selectedRun.id)}
-              onAnalyzeIssue={selectedIssue ? () => analyzeIssue(selectedIssue) : undefined}
+              onAnalyzeIssue={selectedIssue ? () => openIssueAnalysis(selectedIssue) : undefined}
               onAnalyzePr={selectedPr ? () => analyzePr(selectedPr) : undefined}
               onAnalyzeRun={selectedRun ? () => analyzeCi(selectedRun) : undefined}
+              onGithubChange={() => selectedRepo && loadRepoData(selectedRepo.id)}
               onClose={() => setSelectedWorkspaceItem(null)}
             />
           )}
 
           {!hasWorkspaceDetail && workspaceTab === "Issue" && (
             <div className="mt-4 space-y-3">
+              {selectedRepo && <GitHubIssueCreate repoId={selectedRepo.id} onChanged={() => loadRepoData(selectedRepo.id)} />}
               {issueCategoryMeta.map((category) => {
                 const items = filteredIssues.filter((item) => classifyIssue(item) === category.key);
                 const groupKey = `issue-${category.key}`;
@@ -2731,7 +2803,6 @@ export default function DashboardPage() {
                   <CategoryGroup
                     key={category.key}
                     label={category.label}
-                    color={category.color}
                     count={items.length}
                     isCollapsed={collapsedGroups[groupKey] ?? false}
                     onToggle={() => toggleCategory(groupKey)}
@@ -2752,6 +2823,7 @@ export default function DashboardPage() {
 
           {!hasWorkspaceDetail && workspaceTab === "PR" && (
             <div className="mt-4 space-y-3">
+              {prRefreshError && <p role="alert" className="text-xs text-rose-700">PR 列表更新失败：{prRefreshError}</p>}
               {prCategoryMeta.map((category) => {
                 const items = filteredPrs.filter((item) => classifyPr(item) === category.key);
                 const groupKey = `pr-${category.key}`;
@@ -2759,7 +2831,6 @@ export default function DashboardPage() {
                   <CategoryGroup
                     key={category.key}
                     label={category.label}
-                    color={category.color}
                     count={items.length}
                     isCollapsed={collapsedGroups[groupKey] ?? false}
                     onToggle={() => toggleCategory(groupKey)}
@@ -2798,13 +2869,16 @@ export default function DashboardPage() {
           )}
 
           {!hasWorkspaceDetail && workspaceTab === "团队" && (
-            <TeamWorkspace
-              members={teamMembers}
-              draft={memberDraft}
-              onDraftChange={setMemberDraft}
-              onAddMember={addTeamMember}
-              onRemoveMember={removeTeamMember}
-            />
+            <div className="space-y-4">
+              {selectedRepo && <ProjectAccounts repoId={selectedRepo.id} />}
+              <TeamWorkspace
+                members={teamMembers}
+                draft={memberDraft}
+                onDraftChange={setMemberDraft}
+                onAddMember={addTeamMember}
+                onRemoveMember={removeTeamMember}
+              />
+            </div>
           )}
 
           {!hasWorkspaceDetail && workspaceTab === "记忆&知识库" && (
@@ -2857,8 +2931,8 @@ export default function DashboardPage() {
           </div>
         </aside>
 
-          <section className="flex min-h-0 min-w-0 flex-col bg-[#fffaf6]">
-            <div ref={chatScrollRef} className="min-h-0 flex-1 overflow-y-auto px-6 py-5">
+          <section className="workspace-chat flex min-h-0 min-w-0 flex-col">
+            <div ref={chatScrollRef} className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
               <div className="flex w-full flex-col gap-4">
                 {messages.map((item) => {
                   const isWelcome = item.id.startsWith("welcome-");
@@ -2868,8 +2942,8 @@ export default function DashboardPage() {
                   return (
                     <div key={item.id} className={`flex ${item.role === "user" ? "justify-end" : "justify-start"}`}>
                       <div
-                        className={`${isWelcome ? "w-full max-w-none rounded-md" : "max-w-[80%] rounded-2xl"} px-4 py-3 text-sm leading-7 shadow-sm ${
-                          item.role === "user" ? "bg-[#ffd9ca] text-slate-800" : "border border-line bg-white text-slate-700"
+                        className={`workspace-message ${isWelcome ? "w-full max-w-none" : "max-w-[80%]"} px-4 py-3 text-sm leading-7 ${
+                          item.role === "user" ? "bg-teal-50 text-ink" : "bg-white text-ink"
                         }`}
                       >
                         {item.role === "assistant" ? (
@@ -2930,6 +3004,9 @@ export default function DashboardPage() {
                             <span>Agent 正在回复，工具结果已收集，正在整理最终回答...</span>
                           </div>
                         )}
+                        {item.role === "assistant" && item.savingResponse && (
+                          <div className="mt-3 text-xs text-slate-500">正在保存对话...</div>
+                        )}
                         {item.role === "assistant" && item.messageId && !item.responsePending && selectedRepo && selectedConversation && (
                           <FeedbackControls
                             repoId={selectedRepo.id}
@@ -2960,7 +3037,7 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            <div className="border-t border-line bg-white/90 p-4">
+            <div className="workspace-composer p-3">
               <div className="w-full">
                 {(promptSuggestions.length > 0 || loadingPrompts) && (
                   <div className="mb-3 flex items-center gap-2">
@@ -3016,7 +3093,7 @@ export default function DashboardPage() {
                 )}
                 <div className="flex items-stretch gap-3">
                   <textarea
-                    className={`max-h-40 min-h-[5.5rem] flex-1 resize-none rounded-md border bg-white px-3 py-3 text-sm leading-6 outline-none transition focus:border-teal-500 focus:ring-2 focus:ring-teal-100 ${
+                    className={`max-h-40 min-h-[4.5rem] flex-1 resize-none rounded-md border bg-white px-3 py-2 text-sm leading-6 outline-none transition focus:border-teal-500 focus:ring-2 focus:ring-teal-100 ${
                       planMode ? "border-teal-200" : "border-line"
                     }`}
                     value={message}
@@ -3092,10 +3169,11 @@ export default function DashboardPage() {
           issue={analysisModalIssue}
           analysis={issueAnalysisById[analysisModalIssue.id]?.result}
           traceItems={issueAnalysisTraceById[analysisModalIssue.id] ?? []}
-          loading={analyzingIssueId === analysisModalIssue.id}
+          loading={analyzingIssueId === analysisModalIssue.id || loadingIssueAnalysisId === analysisModalIssue.id}
           error={issueAnalysisError}
           onRetry={() => analyzeIssue(analysisModalIssue)}
           onClose={() => {
+            activeIssueModalRef.current = null;
             setAnalysisModalIssueId(null);
             setIssueAnalysisError(null);
           }}
@@ -3645,74 +3723,9 @@ function IssueAnalysisOverlay({
   const checklist = analysis?.checklist?.length ? analysis.checklist : analysis?.action_items ?? [];
   const drafts = analysis?.drafts;
   const hasDrafts = Boolean(drafts?.clarification_comment || drafts?.task_breakdown);
-  const traceScrollRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const node = traceScrollRef.current;
-    if (!node) return;
-    node.scrollTo({ top: node.scrollHeight, behavior: "smooth" });
-  }, [traceItems]);
-
   return (
-    <div className="absolute inset-0 z-50 grid grid-cols-1 items-center gap-3 bg-slate-950/35 p-4 backdrop-blur-sm xl:grid-cols-[280px_minmax(0,1fr)] xl:p-6">
-      <aside className="order-2 flex max-h-[28vh] min-h-0 flex-col overflow-hidden rounded-lg border border-teal-100 bg-white/95 shadow-xl xl:order-1 xl:h-[86vh] xl:max-h-[86vh]">
-        <div className="border-b border-line px-4 py-3">
-          <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-accent">Thinking Trace</div>
-          <h3 className="mt-1 text-sm font-semibold text-ink">公开分析过程</h3>
-          <p className="mt-1 text-xs leading-5 text-slate-500">展示工具调用、证据收集和面向用户的分析摘要。</p>
-        </div>
-        <div ref={traceScrollRef} className="min-h-0 flex-1 space-y-2 overflow-y-auto p-3">
-          {traceItems.length === 0 && (
-            <div className="rounded-md border border-dashed border-line bg-panel p-3 text-xs leading-5 text-slate-500">
-              点击“重新分析”后，这里会流式显示分析步骤。
-            </div>
-          )}
-          {traceItems.map((item) => (
-            <div
-              key={item.id}
-              className={`rounded-md border p-3 text-xs leading-5 shadow-sm ${
-                item.kind === "error"
-                  ? "border-rose-200 bg-rose-50 text-rose-700"
-                  : item.kind === "thinking"
-                    ? "border-teal-200 bg-teal-50/80 text-slate-700"
-                    : "border-line bg-white text-slate-600"
-              }`}
-            >
-              <div className="mb-1 flex items-center justify-between gap-2">
-                <span className="font-semibold text-ink">{item.title}</span>
-                {item.status === "running" && <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-accent" />}
-              </div>
-              {item.kind === "thinking" ? <MarkdownMessage content={item.content} /> : <div className="whitespace-pre-wrap">{item.content}</div>}
-            </div>
-          ))}
-        </div>
-      </aside>
-
-      <div role="dialog" aria-modal="true" className="order-1 flex max-h-[86vh] min-h-0 w-full flex-col overflow-hidden rounded-lg border border-line bg-white shadow-2xl xl:order-2">
-        <div className="flex items-start justify-between gap-4 border-b border-line px-5 py-4">
-          <div className="min-w-0">
-            <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-accent">Issue Agent</div>
-            <h3 className="mt-1 line-clamp-2 text-base font-semibold text-ink">
-              #{issue.number} {issue.title}
-            </h3>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <button
-              onClick={onRetry}
-              disabled={loading}
-              className="inline-flex h-8 items-center gap-1 rounded-md border border-line bg-white px-2.5 text-xs text-slate-600 transition hover:bg-teal-50 disabled:opacity-50"
-              title="重新分析"
-            >
-              <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
-              重新分析
-            </button>
-            <button onClick={onClose} className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-line bg-white text-slate-500 transition hover:bg-panel" title="关闭">
-              <X className="h-4 w-4" />
-            </button>
-          </div>
-        </div>
-
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+    <AnalysisDialog title={`#${issue.number} ${issue.title}`} traceTitle="分析过程" traceItems={traceItems} traceEmptyLabel={analysis ? "正在显示已保存的分析结果。重新分析后，可以查看新的分析过程。" : undefined} loading={loading} onRetry={onRetry} onClose={onClose}>
+        <div className="space-y-4">
           {loading && !analysis && (
             <div className="rounded-md border border-line bg-panel p-4 text-sm text-slate-600">Issue Agent 正在检索 Issue、相似历史、代码、文档和会话上下文...</div>
           )}
@@ -3749,7 +3762,7 @@ function IssueAnalysisOverlay({
                 <div className="mt-3 space-y-2">
                   {(analysis.evidence ?? []).length === 0 && <div className="text-sm text-slate-500">暂无可用证据。</div>}
                   {(analysis.evidence ?? []).map((item, index) => (
-                    <div key={`${item.source_type}-${item.reference ?? "ref"}-${index}`} className="rounded-md bg-[#fbf7f2] p-3 text-sm leading-6 text-slate-700">
+                    <div key={`${item.source_type}-${item.reference ?? "ref"}-${index}`} className="rounded-md bg-panel p-3 text-sm leading-6 text-slate-700">
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="rounded-full bg-white px-2 py-0.5 text-[11px] uppercase tracking-[0.08em] text-slate-500">{item.source_type}</span>
                         <span className="font-medium text-ink">{item.title}</span>
@@ -3793,23 +3806,51 @@ function IssueAnalysisOverlay({
             </div>
           )}
         </div>
+    </AnalysisDialog>
+  );
+}
+
+function AnalysisDialog({ title, traceTitle, traceItems, traceEmptyLabel, loading, onRetry, onClose, children }: {
+  title: string;
+  traceTitle: string;
+  traceItems: IssueAnalysisTraceItem[];
+  traceEmptyLabel?: string;
+  loading: boolean;
+  onRetry: () => void;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/35 p-3 sm:p-6">
+      <div role="dialog" aria-modal="true" aria-label={title} className="flex h-[min(80vh,800px)] w-full max-w-6xl flex-col overflow-hidden rounded-xl bg-white shadow-2xl">
+        <div className="flex shrink-0 items-start justify-between gap-4 border-b border-line px-5 py-4 sm:px-6">
+          <h3 className="min-w-0 text-base font-semibold leading-6 text-ink sm:text-lg">{title}</h3>
+          <div className="flex shrink-0 items-center gap-2">
+            <button onClick={onRetry} disabled={loading} className="inline-flex h-9 items-center gap-1.5 rounded-md border border-line bg-white px-3 text-sm text-slate-600 transition hover:bg-panel disabled:opacity-50" title="重新分析">
+              <RefreshCw className={`h-4 w-4 ${loading ? "animate-spin" : ""}`} />
+              重新分析
+            </button>
+            <button onClick={onClose} className="inline-flex h-9 w-9 items-center justify-center rounded-md border border-line bg-white text-slate-500 transition hover:bg-panel" aria-label="关闭" title="关闭">
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+        <div className="flex min-h-0 flex-1 flex-col md:flex-row">
+          <AgentTraceAside title={traceTitle} traceItems={traceItems} emptyLabel={traceEmptyLabel} />
+          <section aria-label="分析结果" className="flex min-h-0 min-w-0 flex-1 flex-col">
+            <div className="shrink-0 border-b border-line px-5 py-3 text-sm font-semibold text-ink">分析结果</div>
+            <div className="min-h-0 flex-1 overflow-y-auto p-5">{children}</div>
+          </section>
+        </div>
       </div>
     </div>
   );
 }
 
-function AgentTraceAside({
-  eyebrow,
-  title,
-  description,
-  emptyLabel,
-  traceItems
-}: {
-  eyebrow: string;
+function AgentTraceAside({ title, traceItems, emptyLabel }: {
   title: string;
-  description: string;
-  emptyLabel: string;
   traceItems: IssueAnalysisTraceItem[];
+  emptyLabel?: string;
 }) {
   const traceScrollRef = useRef<HTMLDivElement>(null);
 
@@ -3820,24 +3861,20 @@ function AgentTraceAside({
   }, [traceItems]);
 
   return (
-    <aside className="order-2 flex max-h-[28vh] min-h-0 flex-col overflow-hidden rounded-lg border border-teal-100 bg-white/95 shadow-xl xl:order-1 xl:h-[86vh] xl:max-h-[86vh]">
-      <div className="border-b border-line px-4 py-3">
-        <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-accent">{eyebrow}</div>
-        <h3 className="mt-1 text-sm font-semibold text-ink">{title}</h3>
-        <p className="mt-1 text-xs leading-5 text-slate-500">{description}</p>
-      </div>
-      <div ref={traceScrollRef} className="min-h-0 flex-1 space-y-2 overflow-y-auto p-3">
+    <aside className="flex min-h-0 min-w-0 flex-1 flex-col border-b border-line bg-panel/40 md:w-1/2 md:flex-none md:border-b-0 md:border-r">
+      <h4 className="shrink-0 border-b border-line px-5 py-3 text-sm font-semibold text-ink">{title}</h4>
+      <div ref={traceScrollRef} className="min-h-0 flex-1 space-y-3 overflow-y-auto p-5">
         {traceItems.length === 0 && (
-          <div className="rounded-md border border-dashed border-line bg-panel p-3 text-xs leading-5 text-slate-500">{emptyLabel}</div>
+          <p className="text-sm leading-6 text-slate-500">{emptyLabel ?? "分析步骤将在这里显示。"}</p>
         )}
         {traceItems.map((item) => (
           <div
             key={item.id}
-            className={`rounded-md border p-3 text-xs leading-5 shadow-sm ${
+            className={`rounded-md border p-3 text-sm leading-6 ${
               item.kind === "error"
                 ? "border-rose-200 bg-rose-50 text-rose-700"
                 : item.kind === "thinking"
-                  ? "border-teal-200 bg-teal-50/80 text-slate-700"
+                  ? "border-line bg-white text-slate-700"
                   : "border-line bg-white text-slate-600"
             }`}
           >
@@ -3871,40 +3908,8 @@ function PRAnalysisOverlay({
   onClose: () => void;
 }) {
   return (
-    <div className="absolute inset-0 z-50 grid grid-cols-1 items-center gap-3 bg-slate-950/35 p-4 backdrop-blur-sm xl:grid-cols-[280px_minmax(0,1fr)] xl:p-6">
-      <AgentTraceAside
-        eyebrow="Plan & Execute"
-        title="PR Review 过程"
-        description="展示 Review 计划、执行步骤、证据收集和合入判断。"
-        emptyLabel="点击“重新分析”后，这里会流式显示 PR Review 计划和执行过程。"
-        traceItems={traceItems}
-      />
-
-      <div role="dialog" aria-modal="true" className="order-1 flex max-h-[86vh] min-h-0 w-full flex-col overflow-hidden rounded-lg border border-line bg-white shadow-2xl xl:order-2">
-        <div className="flex items-start justify-between gap-4 border-b border-line px-5 py-4">
-          <div className="min-w-0">
-            <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-accent">PR Merge Readiness Agent</div>
-            <h3 className="mt-1 line-clamp-2 text-base font-semibold text-ink">
-              #{pr.number} {pr.title}
-            </h3>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <button
-              onClick={onRetry}
-              disabled={loading}
-              className="inline-flex h-8 items-center gap-1 rounded-md border border-line bg-white px-2.5 text-xs text-slate-600 transition hover:bg-teal-50 disabled:opacity-50"
-              title="重新分析"
-            >
-              <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
-              重新分析
-            </button>
-            <button onClick={onClose} className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-line bg-white text-slate-500 transition hover:bg-panel" title="关闭">
-              <X className="h-4 w-4" />
-            </button>
-          </div>
-        </div>
-
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+    <AnalysisDialog title={`#${pr.number} ${pr.title}`} traceTitle="PR 审查过程" traceItems={traceItems} loading={loading} onRetry={onRetry} onClose={onClose}>
+        <div className="space-y-4">
           {loading && !analysis && (
             <div className="rounded-md border border-line bg-panel p-4 text-sm text-slate-600">PR Agent 正在制定 Review 计划，并检查 diff、代码、CI、文档和 review comments...</div>
           )}
@@ -3962,8 +3967,7 @@ function PRAnalysisOverlay({
             </div>
           )}
         </div>
-      </div>
-    </div>
+    </AnalysisDialog>
   );
 }
 
@@ -3985,38 +3989,8 @@ function CIAnalysisOverlay({
   onClose: () => void;
 }) {
   return (
-    <div className="absolute inset-0 z-50 grid grid-cols-1 items-center gap-3 bg-slate-950/35 p-4 backdrop-blur-sm xl:grid-cols-[280px_minmax(0,1fr)] xl:p-6">
-      <AgentTraceAside
-        eyebrow="Plan & Execute"
-        title="CI 排查过程"
-        description="展示排查计划、失败定位、日志证据和阻塞判断。"
-        emptyLabel="点击“重新分析”后，这里会流式显示 CI 排查计划和执行过程。"
-        traceItems={traceItems}
-      />
-
-      <div role="dialog" aria-modal="true" className="order-1 flex max-h-[86vh] min-h-0 w-full flex-col overflow-hidden rounded-lg border border-line bg-white shadow-2xl xl:order-2">
-        <div className="flex items-start justify-between gap-4 border-b border-line px-5 py-4">
-          <div className="min-w-0">
-            <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-accent">CI Root Cause Agent</div>
-            <h3 className="mt-1 line-clamp-2 text-base font-semibold text-ink">{run.name}</h3>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <button
-              onClick={onRetry}
-              disabled={loading}
-              className="inline-flex h-8 items-center gap-1 rounded-md border border-line bg-white px-2.5 text-xs text-slate-600 transition hover:bg-teal-50 disabled:opacity-50"
-              title="重新分析"
-            >
-              <RefreshCw className={`h-3.5 w-3.5 ${loading ? "animate-spin" : ""}`} />
-              重新分析
-            </button>
-            <button onClick={onClose} className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-line bg-white text-slate-500 transition hover:bg-panel" title="关闭">
-              <X className="h-4 w-4" />
-            </button>
-          </div>
-        </div>
-
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4">
+    <AnalysisDialog title={run.name} traceTitle="CI 排查过程" traceItems={traceItems} loading={loading} onRetry={onRetry} onClose={onClose}>
+        <div className="space-y-4">
           {loading && !analysis && (
             <div className="rounded-md border border-line bg-panel p-4 text-sm text-slate-600">CI Agent 正在制定排查计划，并检查失败 job、错误日志、相关文件和最近 PR...</div>
           )}
@@ -4068,8 +4042,7 @@ function CIAnalysisOverlay({
             </div>
           )}
         </div>
-      </div>
-    </div>
+    </AnalysisDialog>
   );
 }
 
@@ -4087,7 +4060,7 @@ function AnalysisBulletList({
   const iconClass = tone === "danger" ? "text-rose-500" : tone === "warn" ? "text-amber-500" : "text-accent";
   const Icon = tone === "default" ? CheckCircle2 : AlertTriangle;
   return (
-    <div className="rounded-md bg-[#fbf7f2] p-3">
+    <div className="rounded-md bg-panel p-3">
       {title && <div className="text-xs font-semibold text-slate-500">{title}</div>}
       {items.length === 0 ? (
         <div className={`${title ? "mt-2" : ""} text-sm text-slate-500`}>{emptyLabel}</div>
@@ -4148,17 +4121,16 @@ function AddProjectOverlay({
   const canConnect = source === "local" ? Boolean(localPath.trim()) : Boolean(repoUrl.trim());
 
   return (
-    <div className="absolute inset-0 z-50 flex items-center justify-center bg-slate-950/35 p-6 backdrop-blur-sm">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/35 p-4 sm:p-6">
       <div
         role="dialog"
         aria-modal="true"
         aria-labelledby="add-project-title"
-        className="flex max-h-[calc(100%-24px)] w-full max-w-5xl flex-col overflow-hidden rounded-lg border border-line bg-[#eef9fb] shadow-2xl"
+        className="project-dialog flex max-h-[calc(100%-24px)] w-full max-w-5xl flex-col overflow-hidden"
       >
-        <div className="flex items-start justify-between gap-4 border-b border-teal-100 bg-[#eef9fb] px-5 py-4">
+        <div className="project-dialog-header flex items-start justify-between gap-4 px-5 py-4">
           <div className="min-w-0">
-            <div className="text-xs font-semibold uppercase tracking-[0.18em] text-accent">Add Project</div>
-            <h2 id="add-project-title" className="mt-1 text-xl font-semibold text-ink">
+            <h2 id="add-project-title" className="text-xl font-bold text-ink">
               添加项目
             </h2>
           </div>
@@ -4315,7 +4287,7 @@ function AddProjectOverlay({
 
           <section className="rounded-md border border-line bg-white p-4 shadow-sm">
             <h3 className="text-sm font-semibold text-ink">识别结果</h3>
-            <div className="mt-3 rounded-md bg-[#fbf7f2] p-3 text-sm leading-7 text-slate-600">
+            <div className="mt-3 rounded-md bg-panel p-3 text-sm leading-7 text-slate-600">
               {source === "remote" ? (
                 <>
                   <div>
@@ -4358,7 +4330,7 @@ function AddProjectOverlay({
 
 function MetricCard({ icon: Icon, label, value }: { icon: LucideIcon; label: string; value: number }) {
   return (
-    <div className="rounded-md border border-line bg-white px-3 py-2">
+    <div className="workspace-metric px-3 py-2">
       <div className="flex items-center justify-between">
         <div className="text-xs text-slate-500">{label}</div>
         <Icon className="h-3.5 w-3.5 text-accent" />
@@ -4461,14 +4433,12 @@ function SelectFilter({
 
 function CategoryGroup({
   label,
-  color,
   count,
   items,
   isCollapsed,
   onToggle
 }: {
   label: string;
-  color: string;
   count: number;
   items: WorkspaceItem[];
   isCollapsed: boolean;
@@ -4477,9 +4447,9 @@ function CategoryGroup({
   return (
     <section>
       <button type="button" onClick={onToggle} className="flex h-7 w-full items-center justify-between">
-        <div className={`flex items-center gap-2 text-sm font-semibold ${color}`}>
+        <div className="flex items-center gap-2 text-sm font-semibold text-ink">
           <span>{label}</span>
-          <span className="rounded-full bg-[#f2eee8] px-2 py-0.5 text-xs font-medium text-slate-500">{count}</span>
+          <span className="rounded-full bg-panel px-2 py-0.5 text-xs font-medium text-slate-500">{count}</span>
         </div>
         <ChevronDown className={`h-3.5 w-3.5 text-slate-400 transition ${isCollapsed ? "-rotate-90" : ""}`} />
       </button>
@@ -4517,6 +4487,7 @@ function WorkspaceItemButton({ item }: { item: WorkspaceItem }) {
 }
 
 function WorkspaceDetail({
+  repo,
   issue,
   pr,
   run,
@@ -4526,8 +4497,10 @@ function WorkspaceDetail({
   onAnalyzeIssue,
   onAnalyzePr,
   onAnalyzeRun,
+  onGithubChange,
   onClose
 }: {
+  repo?: Repository;
   issue?: Issue;
   pr?: PullRequest;
   run?: WorkflowRun;
@@ -4537,6 +4510,7 @@ function WorkspaceDetail({
   onAnalyzeIssue?: () => void;
   onAnalyzePr?: () => void;
   onAnalyzeRun?: () => void;
+  onGithubChange: () => void;
   onClose: () => void;
 }) {
   const title = issue ? `#${issue.number} ${issue.title}` : pr ? `#${pr.number} ${pr.title}` : run?.name ?? "";
@@ -4602,7 +4576,11 @@ function WorkspaceDetail({
           ))}
         </div>
       )}
-      <div className="mt-3 whitespace-pre-wrap rounded-md bg-[#fbf7f2] p-3 text-xs leading-6 text-slate-700">{body}</div>
+      <div className="mt-3 whitespace-pre-wrap rounded-md bg-panel p-3 text-xs leading-6 text-slate-700">{body}</div>
+      {repo && issue && <IssuePreflight key={`preflight-${issue.id}`} issue={issue} />}
+      {repo && issue && <GitHubIssueActions key={issue.id} repo={repo} issue={issue} onChanged={onGithubChange} />}
+      {repo && pr && <PRConflictPanel key={`conflict-${pr.id}`} pr={pr} />}
+      {repo && pr && <GitHubMergeActions key={pr.id} repoId={repo.id} pr={pr} onChanged={onGithubChange} />}
       {pr?.files && pr.files.length > 0 && (
         <div className="mt-3 space-y-1.5">
           {pr.files.map((file) => (
@@ -4618,6 +4596,428 @@ function WorkspaceDetail({
   );
 }
 
+type PRConflictData = {
+  status: string;
+  error?: string | null;
+  head_sha?: string;
+  base_sha?: string;
+  checked_at?: string | null;
+  detail_status?: string;
+  detail_error?: string | null;
+  conflict_files: { path: string; target_path?: string | null; pr_path?: string | null; target_diff?: string | null; pr_diff?: string | null }[];
+  related_prs: { id: string; number: number; title: string; paths: string[] }[];
+  advice_status?: string;
+  advice_error?: string | null;
+  advice?: { summary: string; files: { path: string; explanation: string; suggestion: string }[] } | null;
+};
+
+function PRConflictPanel({ pr }: { pr: PullRequest }) {
+  const [data, setData] = useState<PRConflictData | null>(null);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    async function load() {
+      const result = await apiGet<PRConflictData>(`/api/pull-requests/${pr.id}/conflict-check`);
+      if (active) { setData(result); setError(""); }
+    }
+    void load().catch((reason) => { if (active) setError(getFriendlyError(reason)); });
+    const timer = window.setInterval(() => { void load().catch((reason) => { if (active) setError(getFriendlyError(reason)); }); }, 10000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [pr.id]);
+
+  async function recheck() {
+    setBusy(true);
+    setError("");
+    try {
+      await apiPost(`/api/pull-requests/${pr.id}/conflict-check/recheck`, {});
+      setData(await apiGet<PRConflictData>(`/api/pull-requests/${pr.id}/conflict-check`));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function copyAdvice() {
+    if (!data?.advice) return;
+    if (!navigator.clipboard) {
+      setNotice("浏览器无法使用剪贴板，请通过安全连接访问");
+      return;
+    }
+    const lines = [`# PR #${pr.number} ${pr.title}`, "", data.advice.summary];
+    for (const item of data.advice.files) lines.push("", `## ${item.path}`, item.explanation, item.suggestion);
+    await navigator.clipboard.writeText(lines.join("\n"));
+    setNotice("处理建议已复制");
+  }
+
+  const labels: Record<string, string> = { pending: "正在检查", checking: "正在检查", clear: "当前没有合并冲突", conflict: "存在合并冲突", unavailable: "暂时无法检查", disabled: "冲突检查未启用", closed: "PR 已关闭" };
+  return <section className="mt-4 border-t border-line pt-3" aria-label="合并冲突检查">
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <div><h3 className="text-sm font-semibold text-ink">合并冲突检查</h3><p role="status" className={`mt-1 text-xs ${data?.status === "conflict" ? "text-rose-700" : "text-slate-600"}`}>{data ? labels[data.status] ?? data.status : "正在读取检查结果"}</p></div>
+      {pr.state === "open" && <button type="button" onClick={() => { void recheck().catch((reason) => setError(getFriendlyError(reason))); }} disabled={busy || !data || data.status === "disabled" || data.status === "pending" || data.status === "checking"} className="rounded-md border border-line px-3 py-1.5 text-xs hover:bg-panel disabled:opacity-50">{busy ? "正在提交" : "重新检查"}</button>}
+    </div>
+    {(error || data?.error) && <p role="alert" className="mt-2 text-xs text-rose-700">{error || data?.error}</p>}
+    {data?.status === "conflict" && <div className="mt-3 space-y-2 text-xs leading-5 text-slate-700">
+      {data.detail_status === "pending" || data.detail_status === "running" || data.detail_status === "waiting" ? <p>正在定位冲突文件。</p> : null}
+      {data.detail_error && <p className="text-rose-700">{data.detail_error}</p>}
+      {data.conflict_files.map((file) => <div key={file.path} className="rounded-md bg-rose-50 p-2"><p className="break-all font-medium text-rose-900">{file.path}</p><details className="mt-1"><summary className="cursor-pointer">查看双方修改</summary><div className="mt-2 grid gap-2"><div><p className="font-medium">目标分支</p><pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-all">{file.target_diff || "暂无文本差异"}</pre></div><div><p className="font-medium">PR 分支</p><pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-all">{file.pr_diff || "暂无文本差异"}</pre></div></div></details></div>)}
+      {data.advice_status === "pending" || data.advice_status === "running" ? <p>正在生成处理建议。</p> : null}
+      {data.advice_error && <p className="text-rose-700">{data.advice_error}</p>}
+      {data.advice && <div><div className="flex items-center justify-between gap-2"><h4 className="font-medium text-ink">处理建议</h4><button type="button" onClick={() => { void copyAdvice().catch((reason) => setError(getFriendlyError(reason))); }} className="text-accent hover:underline">复制建议</button></div><p className="mt-1">{data.advice.summary}</p><ul className="mt-2 space-y-2">{data.advice.files.map((item) => <li key={item.path}><p className="break-all font-medium">{item.path}</p><p>{item.explanation}</p><p>{item.suggestion}</p></li>)}</ul>{notice && <p role="status" className="mt-2">{notice}</p>}</div>}
+    </div>}
+    {data && data.detail_status === "ready" && data.related_prs.length > 0 && <div className="mt-3 text-xs leading-5 text-amber-900"><h4 className="font-medium">其他 PR 合并后可能发生冲突</h4><ul className="mt-1 space-y-1">{data.related_prs.map((item) => <li key={item.id}>PR #{item.number} {item.title}：{item.paths.join("、")}</li>)}</ul><p className="mt-1">目标分支更新后会自动重新检查。</p></div>}
+    {data?.detail_status === "unavailable" && data.status !== "conflict" && <p className="mt-2 text-xs text-slate-600">其他 PR 的关联检查暂不可用：{data.detail_error}</p>}
+    {data?.checked_at && <p className="mt-2 text-xs text-slate-500">检查时间：{formatDate(data.checked_at)}</p>}
+  </section>;
+}
+
+type PreflightStatement = { text: string; evidence_ids: string[] };
+type PreflightData = {
+  status: string;
+  report_is_current?: boolean;
+  base_commit_sha?: string | null;
+  working_tree_dirty?: boolean | null;
+  completed_at?: string | null;
+  error?: string | null;
+  unchecked_issues: number;
+  overlap_check_available: boolean;
+  declared_paths: string[];
+  overlaps: { issue_id: string; number: number; title: string; assignees: string[]; paths: string[] }[];
+  report: {
+    objective: PreflightStatement;
+    requirements: PreflightStatement[];
+    hard_constraints: PreflightStatement[];
+    affected_components: { path: string; description: string; evidence_ids: string[] }[];
+    contract_impacts: PreflightStatement[];
+    acceptance_criteria: PreflightStatement[];
+    test_recommendations: PreflightStatement[];
+    risks: PreflightStatement[];
+    open_questions: string[];
+    evidence: { id: string; type: string; title: string; content: string }[];
+  } | null;
+};
+
+function IssuePreflight({ issue }: { issue: Issue }) {
+  const [data, setData] = useState<PreflightData | null>(null);
+  const [error, setError] = useState("");
+  const [copyNotice, setCopyNotice] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [scopeText, setScopeText] = useState("");
+  const [editingScope, setEditingScope] = useState(false);
+  const pollDelay = data && !["not_started", "pending", "running"].includes(data.status) ? 60000 : 10000;
+
+  useEffect(() => {
+    let active = true;
+    async function load() {
+      try {
+        const result = await apiGet<PreflightData>(`/api/issues/${issue.id}/preflight`);
+        if (active) { setData(result); setError(""); }
+      } catch (reason) {
+        if (active) setError(getFriendlyError(reason));
+      }
+    }
+    void load();
+    const timer = window.setInterval(load, pollDelay);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [issue.id, pollDelay]);
+
+  async function recheck() {
+    setBusy(true);
+    setError("");
+    try {
+      await apiPost(`/api/issues/${issue.id}/preflight/recheck`, {});
+      setData(await apiGet<PreflightData>(`/api/issues/${issue.id}/preflight`));
+    } catch (reason) {
+      setError(getFriendlyError(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveScope() {
+    setBusy(true);
+    setError("");
+    try {
+      await apiPut(`/api/issues/${issue.id}/preflight/scope`, { paths: scopeText.split("\n").map((item) => item.trim()).filter(Boolean) });
+      setData(await apiGet<PreflightData>(`/api/issues/${issue.id}/preflight`));
+      setEditingScope(false);
+    } catch (reason) {
+      setError(getFriendlyError(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const labels: Record<string, string> = { disabled: "预分析未启用", not_started: "等待同步", pending: "等待分析", running: "正在分析", ready: "分析完成", stale: "需要更新", failed: "分析失败", superseded: "等待更新" };
+  const report = data?.report;
+  const sections: { title: string; items: PreflightStatement[] }[] = report ? [
+    { title: "明确需求", items: report.requirements },
+    { title: "必须遵守", items: report.hard_constraints },
+    { title: "接口与类型影响", items: report.contract_impacts },
+    { title: "验收条件", items: report.acceptance_criteria },
+    { title: "测试建议", items: report.test_recommendations },
+    { title: "需要关注", items: report.risks }
+  ] : [];
+
+  async function copyReport() {
+    if (!data || !report) return;
+    const lines = [`# Issue #${issue.number} ${issue.title}`, "", "## 报告状态", data.report_is_current ? "报告已更新" : "报告需要更新，请结合当前代码和需求查看。"];
+    if (data.working_tree_dirty) lines.push("分析时工作目录包含未提交的修改。");
+    if (data.base_commit_sha) lines.push(`代码版本：${data.base_commit_sha}`);
+    lines.push("", "## 开发目标", `${report.objective.text} [${report.objective.evidence_ids.join("、")}]`);
+    if (report.affected_components.length) {
+      lines.push("", "## 可能涉及的文件", ...report.affected_components.map((item) => `- ${item.path}：${item.description} [${item.evidence_ids.join("、")}]`));
+    }
+    if (data.declared_paths.length) lines.push("", "## 团队补充的文件", ...data.declared_paths.map((path) => `- ${path}`));
+    if (data.overlap_check_available) {
+      lines.push("", "## 相关协作");
+      if (data.overlaps.length) {
+        lines.push(...data.overlaps.map((item) => `- Issue #${item.number} ${item.title}；负责人：${item.assignees.join("、")}；共同涉及：${item.paths.join("、")}`));
+      } else {
+        lines.push("已完成分析的其他进行中 Issue 暂无共同文件。");
+      }
+      if (data.unchecked_issues) lines.push(`另有 ${data.unchecked_issues} 个已分配的 Issue 尚未完成有效分析。`);
+      lines.push("共同涉及文件表示需要沟通，具体修改范围仍需确认。");
+    } else {
+      lines.push("", "## 相关协作", "当前暂时无法比较相关文件。");
+    }
+    for (const section of sections) {
+      if (section.items.length) lines.push("", `## ${section.title}`, ...section.items.map((item) => `- ${item.text} [${item.evidence_ids.join("、")}]`));
+    }
+    if (report.open_questions.length) lines.push("", "## 需要确认", ...report.open_questions.map((item) => `- ${item}`));
+    if (report.evidence.length) {
+      lines.push("", "## 分析依据");
+      for (const item of report.evidence) lines.push("", `### [${item.id}] ${item.title}`, item.content);
+    }
+    setCopyNotice("");
+    if (!navigator.clipboard) {
+      setCopyNotice("浏览器无法使用剪贴板，请通过安全连接访问");
+      return;
+    }
+    await navigator.clipboard.writeText(lines.join("\n"));
+    setCopyNotice("分析内容已复制");
+  }
+
+  return <section className="mt-4 border-t border-line pt-3" aria-label="开发准备">
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <div><h3 className="text-sm font-semibold text-ink">开发准备</h3><p className="mt-1 text-xs text-slate-600" role="status">{data ? labels[data.status] ?? data.status : "正在读取分析状态"}</p></div>
+      <div className="flex flex-wrap gap-2">
+        {report && <button type="button" onClick={copyReport} className="rounded-md border border-line px-3 py-1.5 text-xs hover:bg-panel">复制分析</button>}
+        {issue.state === "open" && <button type="button" onClick={recheck} disabled={busy || !data || data.status === "disabled" || data.status === "pending" || data.status === "running"} className="rounded-md border border-line px-3 py-1.5 text-xs hover:bg-panel disabled:opacity-50">{busy ? "正在提交" : "重新分析"}</button>}
+      </div>
+    </div>
+    {copyNotice && <p role="status" className="mt-2 text-xs text-slate-700">{copyNotice}</p>}
+    {error && <p role="alert" className="mt-2 text-xs text-rose-700">{error}</p>}
+    {data?.error && <p className="mt-2 text-xs text-rose-700">{data.error}</p>}
+    {data && !report && data.status !== "disabled" && <p className="mt-3 text-xs leading-5 text-slate-600">后台会同步 Issue 并生成开发建议，完成后自动显示。</p>}
+    {data && <div className="mt-3 text-xs leading-5 text-slate-700"><div className="flex items-center justify-between gap-2"><h4 className="font-medium text-ink">团队补充的文件</h4><button type="button" onClick={() => { setScopeText(data.declared_paths.join("\n")); setEditingScope(!editingScope); }} className="text-accent hover:underline">{editingScope ? "取消" : "编辑文件"}</button></div>{data.declared_paths.length > 0 ? <ul className="mt-1 space-y-1">{data.declared_paths.map((path) => <li key={path} className="break-all">{path}</li>)}</ul> : <p className="mt-1 text-slate-600">可以补充开发过程中发现的文件，供团队查看。</p>}{editingScope && <div className="mt-2"><label htmlFor={`preflight-scope-${issue.id}`} className="block text-slate-600">每行填写一个仓库内的文件路径</label><textarea id={`preflight-scope-${issue.id}`} value={scopeText} onChange={(event) => setScopeText(event.target.value)} className="mt-1 min-h-20 w-full rounded-md border border-line p-2" /><button type="button" onClick={saveScope} disabled={busy} className="mt-2 rounded-md border border-line px-3 py-1.5 hover:bg-panel disabled:opacity-50">{busy ? "正在保存" : "保存文件"}</button></div>}</div>}
+    {data && (data.report_is_current || data.declared_paths.length > 0) && <div className="mt-3 text-xs leading-5 text-slate-700"><h4 className="font-medium text-ink">相关协作</h4>{!data.overlap_check_available ? <p className="mt-1">当前代码版本尚未确认，暂时无法比较相关文件。</p> : data.overlaps.length > 0 ? <ul className="mt-1 space-y-2">{data.overlaps.map((item) => <li key={item.issue_id} className="rounded-md bg-amber-50 p-2 text-amber-900"><p>Issue #{item.number} {item.title} · 负责人：{item.assignees.join("、")}</p><p className="mt-1 break-all">共同涉及：{item.paths.join("、")}</p></li>)}</ul> : <p className="mt-1">已完成分析的其他进行中 Issue 暂无共同文件。</p>}{data.unchecked_issues > 0 && <p className="mt-1">另有 {data.unchecked_issues} 个已分配的 Issue 尚未完成有效分析。</p>}<p className="mt-1 text-slate-500">共同涉及文件表示需要沟通，具体修改范围仍需确认。</p></div>}
+    {report && <div className="mt-3 space-y-3 text-xs leading-5 text-slate-700">
+      {!data?.report_is_current && <p className="rounded-md bg-amber-50 p-2 text-amber-800">这份报告需要更新，请结合当前代码和需求查看。</p>}
+      {data?.working_tree_dirty && <p className="rounded-md bg-amber-50 p-2 text-amber-800">分析时工作目录包含未提交的修改。</p>}
+      <div><h4 className="font-medium text-ink">开发目标</h4><p className="mt-1">{report.objective.text} <span className="text-slate-500">[{report.objective.evidence_ids.join("、")}]</span></p></div>
+      {report.affected_components.length > 0 && <div><h4 className="font-medium text-ink">可能涉及的文件</h4><ul className="mt-1 space-y-1">{report.affected_components.map((item, index) => <li key={`${item.path}-${index}`}><span className="break-all font-medium text-ink">{item.path}</span>：{item.description} <span className="text-slate-500">[{item.evidence_ids.join("、")}]</span></li>)}</ul></div>}
+      {sections.filter((section) => section.items.length > 0).map((section) => <div key={section.title}><h4 className="font-medium text-ink">{section.title}</h4><ul className="mt-1 list-disc space-y-1 pl-4">{section.items.map((item, index) => <li key={index}>{item.text} <span className="text-slate-500">[{item.evidence_ids.join("、")}]</span></li>)}</ul></div>)}
+      {report.open_questions.length > 0 && <div><h4 className="font-medium text-ink">需要确认</h4><ul className="mt-1 list-disc space-y-1 pl-4">{report.open_questions.map((item, index) => <li key={index}>{item}</li>)}</ul></div>}
+      <details><summary className="cursor-pointer font-medium text-ink">查看分析依据</summary><ul className="mt-2 space-y-2">{report.evidence.map((item) => <li key={item.id} className="rounded-md bg-panel p-2"><p className="break-all font-medium">[{item.id}] {item.title}</p><p className="mt-1 whitespace-pre-wrap break-words">{item.content}</p></li>)}</ul></details>
+      {data?.base_commit_sha && <p className="break-all text-slate-500">代码版本：{data.base_commit_sha}</p>}
+    </div>}
+  </section>;
+}
+
+function GitHubIssueCreate({ repoId, onChanged }: { repoId: string; onChanged: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [title, setTitle] = useState("");
+  const [body, setBody] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  async function submit() {
+    setBusy(true);
+    setError("");
+    try {
+      await apiPost(`/api/github/repos/${repoId}/issues`, { title, body });
+      setTitle("");
+      setBody("");
+      setOpen(false);
+      onChanged();
+    } catch (reason) {
+      setError(getFriendlyError(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return <div className="rounded-md border border-line bg-white p-3">
+    <button onClick={() => setOpen(!open)} className="text-sm font-medium text-accent">{open ? "取消创建" : "+ 创建 Issue"}</button>
+    {open && <div className="mt-3 space-y-2">
+      <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="简要描述问题" className="h-9 w-full rounded-md border border-line px-3 text-sm" />
+      <textarea value={body} onChange={(event) => setBody(event.target.value)} placeholder="补充说明（选填）" className="min-h-20 w-full rounded-md border border-line p-3 text-sm" />
+      <button onClick={submit} disabled={busy || !title.trim()} className="primary-button rounded-md px-3 py-2 text-sm disabled:opacity-50">{busy ? "提交中..." : "创建 Issue"}</button>
+      {error && <p role="alert" className="text-xs text-rose-700">{error}</p>}
+    </div>}
+  </div>;
+}
+
+function GitHubIssueActions({ repo, issue, onChanged }: { repo: Repository; issue: Issue; onChanged: () => void }) {
+  const [account, setAccount] = useState<{ github_login: string | null; projects: { repo_id: string; role: string }[] } | null>(null);
+  const [members, setMembers] = useState<ProjectAccount[]>([]);
+  const [assignee, setAssignee] = useState("");
+  const [open, setOpen] = useState(false);
+  const [head, setHead] = useState("");
+  const [branches, setBranches] = useState<string[]>([]);
+  const [base, setBase] = useState(repo.default_branch || "");
+  const [title, setTitle] = useState(issue.title);
+  const [body, setBody] = useState("");
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [busy, setBusy] = useState(false);
+  const role = account?.projects.find((item) => item.repo_id === repo.id)?.role;
+
+  useEffect(() => {
+    Promise.all([apiGet<typeof account>("/api/auth/me"), apiGet<typeof members>(`/api/github/repos/${repo.id}/members`)])
+      .then(([current, items]) => { setAccount(current); setMembers(items); })
+      .catch((reason) => setError(getFriendlyError(reason)));
+  }, [repo.id]);
+
+  async function claim() {
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      await apiPost(`/api/github/issues/${issue.id}/claim`, {});
+      setNotice("领取成功，GitHub 的负责人已更新。");
+      onChanged();
+    } catch (reason) {
+      setError(getFriendlyError(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function submit() {
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      const result = await apiPost<{ number: number }>(`/api/github/repos/${repo.id}/pull-requests`, { issue_id: issue.id, title, body, head, base });
+      setNotice(`PR #${result.number} 已创建。`);
+      setOpen(false);
+      onChanged();
+    } catch (reason) {
+      setError(getFriendlyError(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function assign() {
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      await apiPut(`/api/github/issues/${issue.id}/assignee`, { user_id: assignee === "unassigned" ? null : assignee });
+      setAssignee("");
+      setNotice("负责人已更新。");
+      onChanged();
+    } catch (reason) {
+      setError(getFriendlyError(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function openPullRequest() {
+    if (open) {
+      setOpen(false);
+      return;
+    }
+    setBusy(true);
+    setError("");
+    try {
+      setBranches(await apiGet<string[]>(`/api/github/repos/${repo.id}/branches`));
+      setOpen(true);
+    } catch (reason) {
+      setError(getFriendlyError(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (role !== "leader" && role !== "developer") return null;
+  return <section className="mt-4 border-t border-line pt-3">
+    <div className="flex flex-wrap gap-2">
+      <button onClick={claim} disabled={busy || issue.state !== "open"} className="rounded-md border border-line px-3 py-1.5 text-xs hover:bg-panel disabled:opacity-50">领取 Issue</button>
+      <button onClick={openPullRequest} disabled={busy || issue.state !== "open"} className="rounded-md border border-line px-3 py-1.5 text-xs hover:bg-panel disabled:opacity-50">{open ? "取消提交" : "提交 PR"}</button>
+    </div>
+    {role === "leader" && <div className="mt-3 flex gap-2">
+      <select aria-label="选择负责人" value={assignee} onChange={(event) => setAssignee(event.target.value)} className="min-w-0 flex-1 rounded-md border border-line bg-white px-2 py-1.5 text-xs"><option value="">选择负责人</option><option value="unassigned">清除负责人</option>{members.filter((member) => member.github_login && member.role !== "product_manager").map((member) => <option key={member.user_id} value={member.user_id}>{member.name}（{member.github_login}）</option>)}</select>
+      <button onClick={assign} disabled={busy || !assignee || issue.state !== "open"} className="rounded-md border border-line px-3 py-1.5 text-xs hover:bg-panel disabled:opacity-50">设置</button>
+    </div>}
+    {open && <div className="mt-3 space-y-2">
+      <p className="text-xs leading-5 text-slate-600">填写已经推送到 GitHub 的分支，PR 将关联当前 Issue。</p>
+      <datalist id={`github-branches-${issue.id}`}>{branches.map((branch) => <option key={branch} value={branch} />)}</datalist>
+      <input list={`github-branches-${issue.id}`} value={head} onChange={(event) => setHead(event.target.value)} placeholder="修改所在分支" className="h-9 w-full rounded-md border border-line px-3 text-sm" />
+      <input list={`github-branches-${issue.id}`} value={base} onChange={(event) => setBase(event.target.value)} placeholder="目标分支" className="h-9 w-full rounded-md border border-line px-3 text-sm" />
+      <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="PR 标题" className="h-9 w-full rounded-md border border-line px-3 text-sm" />
+      <textarea value={body} onChange={(event) => setBody(event.target.value)} placeholder="修改说明" className="min-h-20 w-full rounded-md border border-line p-3 text-sm" />
+      <button onClick={submit} disabled={busy || !head.trim() || !base.trim() || !title.trim()} className="primary-button rounded-md px-3 py-2 text-sm disabled:opacity-50">{busy ? "提交中..." : "确认创建 PR"}</button>
+    </div>}
+    {error && <p role="alert" className="mt-2 text-xs text-rose-700">{error}</p>}{notice && <p role="status" className="mt-2 text-xs text-slate-700">{notice}</p>}
+  </section>;
+}
+
+function GitHubMergeActions({ repoId, pr, onChanged }: { repoId: string; pr: PullRequest; onChanged: () => void }) {
+  const [role, setRole] = useState("");
+  const [preview, setPreview] = useState<{ title: string; head: string; base: string; head_sha: string; mergeable: boolean | null } | null>(null);
+  const [method, setMethod] = useState("merge");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => { apiGet<{ projects: { repo_id: string; role: string }[] }>("/api/auth/me").then((account) => setRole(account.projects.find((item) => item.repo_id === repoId)?.role ?? "")).catch((reason) => setError(getFriendlyError(reason))); }, [repoId]);
+
+  async function loadPreview() {
+    setBusy(true);
+    setError("");
+    try {
+      setPreview(await apiGet(`/api/github/pull-requests/${pr.id}/merge-preview`));
+    } catch (reason) {
+      setError(getFriendlyError(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function merge() {
+    if (!preview) return;
+    setBusy(true);
+    setError("");
+    try {
+      await apiPost(`/api/github/pull-requests/${pr.id}/merge`, { head_sha: preview.head_sha, merge_method: method });
+      setPreview(null);
+      onChanged();
+    } catch (reason) {
+      setError(getFriendlyError(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (role !== "leader" || pr.state !== "open") return null;
+  return <section className="mt-4 border-t border-line pt-3">
+    {!preview ? <button onClick={loadPreview} disabled={busy} className="rounded-md border border-line px-3 py-1.5 text-xs hover:bg-panel">合并 PR</button> : <div className="space-y-2">
+      <p className="text-sm font-medium text-ink">确认合并：{preview.title}</p>
+      <p className="text-xs text-slate-600">{preview.head} → {preview.base}</p>
+      {preview.mergeable === false && <p className="text-xs text-rose-700">GitHub 报告该 PR 暂时无法合并。</p>}
+      {preview.mergeable === null && <p className="text-xs text-slate-600">GitHub 正在检查合并状态，请稍后重新打开合并预览。</p>}
+      <select value={method} onChange={(event) => setMethod(event.target.value)} aria-label="合并方式" className="h-9 w-full rounded-md border border-line bg-white px-3 text-sm"><option value="merge">创建合并提交</option><option value="squash">合并为一个提交</option><option value="rebase">变基后合并</option></select>
+      <div className="flex gap-2"><button onClick={merge} disabled={busy || preview.mergeable !== true} className="primary-button rounded-md px-3 py-2 text-xs disabled:opacity-50">{busy ? "合并中..." : "确认合并"}</button><button onClick={() => setPreview(null)} className="rounded-md border border-line px-3 py-2 text-xs">取消</button></div>
+    </div>}
+    {error && <p role="alert" className="mt-2 text-xs text-rose-700">{error}</p>}
+  </section>;
+}
+
 function MetaPill({ label, value }: { label: string; value: string }) {
   return (
     <span className="rounded-full bg-panel px-2.5 py-1 text-xs text-slate-600">
@@ -4628,6 +5028,98 @@ function MetaPill({ label, value }: { label: string; value: string }) {
 
 function EmptyWorkspaceState({ label }: { label: string }) {
   return <div className="rounded-md border border-line bg-white p-4 text-sm text-slate-500">{label}</div>;
+}
+
+function ProjectAccounts({ repoId }: { repoId: string }) {
+  const [members, setMembers] = useState<ProjectAccount[]>([]);
+  const [account, setAccount] = useState<{ id: string; projects: { repo_id: string; role: string }[] } | null>(null);
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [role, setRole] = useState("developer");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const isLeader = account?.projects.some((project) => project.repo_id === repoId && project.role === "leader");
+
+  async function load() {
+    const [current, items] = await Promise.all([
+      apiGet<{ id: string; projects: { repo_id: string; role: string }[] }>("/api/auth/me"),
+      apiGet<typeof members>(`/api/github/repos/${repoId}/members`)
+    ]);
+    setAccount(current);
+    setMembers(items);
+  }
+
+  useEffect(() => {
+    setError("");
+    let active = true;
+    Promise.all([
+      apiGet<{ id: string; projects: { repo_id: string; role: string }[] }>("/api/auth/me"),
+      apiGet<typeof members>(`/api/github/repos/${repoId}/members`)
+    ]).then(([current, items]) => {
+      if (active) {
+        setAccount(current);
+        setMembers(items);
+      }
+    }).catch((reason) => { if (active) setError(getFriendlyError(reason)); });
+    return () => { active = false; };
+  }, [repoId]);
+
+  async function add() {
+    setBusy(true);
+    setError("");
+    try {
+      await apiPut(`/api/github/repos/${repoId}/members`, { username, role, ...(password ? { password } : {}) });
+      setUsername("");
+      setPassword("");
+      await load();
+    } catch (reason) {
+      setError(getFriendlyError(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function remove(userId: string) {
+    setBusy(true);
+    setError("");
+    try {
+      await apiDelete(`/api/github/repos/${repoId}/members/${userId}`);
+      await load();
+    } catch (reason) {
+      setError(getFriendlyError(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function changeRole(memberName: string, nextRole: string) {
+    setBusy(true);
+    setError("");
+    try {
+      await apiPut(`/api/github/repos/${repoId}/members`, { username: memberName, role: nextRole });
+      await load();
+    } catch (reason) {
+      setError(getFriendlyError(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const roleNames: Record<string, string> = { leader: "组长", developer: "组员", product_manager: "产品经理" };
+  return (
+    <section className="rounded-md border border-line bg-white p-4">
+      <h3 className="text-sm font-semibold text-ink">项目账号与权限</h3>
+      <p className="mt-1 text-xs leading-5 text-slate-500">组长创建账号并分配角色，成员登录后关联自己的 GitHub 账号。</p>
+      {isLeader && <div className="mt-4 grid gap-2">
+        <input value={username} onChange={(event) => setUsername(event.target.value)} placeholder="成员账号" className="h-9 rounded-md border border-line px-3 text-sm" />
+        <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} placeholder="新账号的初始密码" autoComplete="new-password" className="h-9 rounded-md border border-line px-3 text-sm" />
+        <select aria-label="项目角色" value={role} onChange={(event) => setRole(event.target.value)} className="h-9 rounded-md border border-line bg-white px-3 text-sm"><option value="developer">组员</option><option value="product_manager">产品经理</option><option value="leader">组长</option></select>
+        <button onClick={add} disabled={busy || !username.trim()} className="primary-button rounded-md px-3 py-2 text-sm disabled:opacity-50">添加成员</button>
+      </div>}
+      {error && <p role="alert" className="mt-3 text-xs text-rose-700">{error}</p>}
+      <div className="mt-4 divide-y divide-line">{members.map((member) => <div key={member.user_id} className="flex items-center justify-between gap-2 py-2 text-sm"><div className="flex min-w-0 items-center gap-2">{member.avatar_url ? <Image src={member.avatar_url} alt="" width={32} height={32} unoptimized referrerPolicy="no-referrer" className="h-8 w-8 rounded-full object-cover" /> : <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-panel text-xs">{member.name.slice(0, 1).toUpperCase()}</span>}<div className="min-w-0"><span className="font-medium text-ink">{member.name}</span><div className="text-xs text-slate-500">{member.github_login ? `GitHub：${member.github_login}` : `账号：${member.username}`}</div></div></div><div className="flex items-center gap-2">{isLeader && member.user_id !== account?.id ? <><select aria-label={`${member.username}的项目角色`} disabled={busy} value={member.role} onChange={(event) => changeRole(member.username, event.target.value)} className="rounded-md border border-line bg-white px-2 py-1 text-xs"><option value="developer">组员</option><option value="product_manager">产品经理</option><option value="leader">组长</option></select><button disabled={busy} onClick={() => remove(member.user_id)} className="text-xs text-slate-600 hover:text-ink">移除</button></> : <span className="text-xs text-slate-500">{roleNames[member.role] ?? member.role}</span>}</div></div>)}</div>
+    </section>
+  );
 }
 
 function TeamWorkspace({
@@ -4648,8 +5140,8 @@ function TeamWorkspace({
       <section className="rounded-md border border-line bg-white p-4">
         <div className="flex items-start justify-between gap-3">
           <div>
-            <h3 className="text-sm font-semibold text-ink">人员管理</h3>
-            <p className="mt-1 text-xs leading-5 text-slate-500">配置项目工作者，Agent 会在分配 Issue 时参考职位、擅长方向和技术栈。</p>
+            <h3 className="text-sm font-semibold text-ink">Agent 参考资料</h3>
+            <p className="mt-1 text-xs leading-5 text-slate-500">填写成员的职位和擅长方向，供 Agent 分析时参考。</p>
           </div>
           <span className="rounded-full bg-panel px-2 py-0.5 text-xs text-slate-500">{members.length} 人</span>
         </div>
@@ -5843,10 +6335,9 @@ function classifyIssue(issue: Issue) {
 }
 
 function classifyPr(pr: PullRequest) {
-  const text = `${pr.title} ${pr.body ?? ""} ${(pr.files ?? []).map((file) => file.patch ?? file.filename).join(" ")}`.toLowerCase();
   if (pr.state === "closed" && !pr.merged_at) return "rejected";
-  if (text.includes("conflict")) return "conflict";
   if (pr.merged_at) return "done";
+  if (pr.conflict_status === "conflict") return "conflict";
   if (!pr.author) return "needsOwner";
   return "reviewing";
 }

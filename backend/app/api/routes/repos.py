@@ -7,11 +7,11 @@ from pathlib import Path
 from urllib.parse import urlparse
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from app.db.models import ActionDraft, AgentRun, AgentTaskRun, AgentWorkflowRun, AnalysisResult, AuditLog, ChatFeedback, ChatMessage, ChatSession, CodeRelation, CodeSymbol, Conversation, ConversationMemory, Document, EvidenceItem, Issue, KnowledgeBaseConfig, KnowledgeGraphEdge, KnowledgeSourceDocument, MemoryCandidate, PRFile, PRReviewComment, ProjectIndexState, PullRequest, RecallEvent, Repository, RetrievalTestRun, ThreadMemory, WorkflowRun, Workspace
+from app.db.models import ActionDraft, AgentRun, AgentTaskRun, AgentWorkflowRun, AnalysisResult, AuditLog, ChatFeedback, ChatMessage, ChatSession, CodeRelation, CodeSymbol, Conversation, ConversationMemory, Document, EvidenceItem, Issue, IssuePollCursor, IssuePreflightJob, IssuePreflightScope, KnowledgeBaseConfig, KnowledgeGraphEdge, KnowledgeSourceDocument, MemoryCandidate, PRConflictCheck, PRConflictPollState, PRFile, PRReviewComment, ProjectIndexState, ProjectMember, PullRequest, RecallEvent, Repository, RetrievalTestRun, ThreadMemory, WorkflowRun, Workspace
 from app.db.session import get_db
 from app.schemas.repos import RepoConnectRequest, RepoConnectResponse, RepoResponse, RepoSyncRequest, RepoSyncResponse
 from app.core.config import settings
@@ -155,7 +155,7 @@ def _clone_target_from_parent(raw_parent: str, repo_name: str) -> Path:
 
 
 @router.post("/connect", response_model=RepoConnectResponse)
-async def connect_repo(payload: RepoConnectRequest, background_tasks: BackgroundTasks, db: Session = Depends(get_db)) -> RepoConnectResponse:
+async def connect_repo(payload: RepoConnectRequest, background_tasks: BackgroundTasks, request: Request, db: Session = Depends(get_db)) -> RepoConnectResponse:
     local_path = _clean_text(payload.local_path)
     clone_parent_dir = _clean_text(payload.clone_parent_dir)
     owner = _clean_text(payload.owner)
@@ -222,6 +222,9 @@ async def connect_repo(payload: RepoConnectRequest, background_tasks: Background
     repo.local_path = str(checkout_path) if checkout_path else None
     repo.checkout_mode = checkout_mode
     repo.github_id = repo_data.get("id")
+    db.flush()
+    if db.get(ProjectMember, (repo.id, request.state.user_id)) is None:
+        db.add(ProjectMember(repo_id=repo.id, user_id=request.state.user_id, role="leader"))
     db.commit()
     db.refresh(repo)
     sync_result: RepoSyncResponse | None = None
@@ -264,9 +267,11 @@ async def connect_repo(payload: RepoConnectRequest, background_tasks: Background
 
 
 @router.get("", response_model=list[RepoResponse])
-async def list_repos(db: Session = Depends(get_db)) -> list[Repository]:
+async def list_repos(request: Request, db: Session = Depends(get_db)) -> list[Repository]:
     return (
         db.query(Repository)
+        .join(ProjectMember, ProjectMember.repo_id == Repository.id)
+        .filter(ProjectMember.user_id == request.state.user_id)
         .filter(Repository.provider != "knowledge_base")
         .order_by(Repository.updated_at.desc())
         .all()
@@ -350,6 +355,7 @@ async def delete_repo(repo_id: UUID, db: Session = Depends(get_db)) -> dict:
     stored_paths = [Path(source.stored_path) for source in knowledge_sources]
 
     if pr_ids:
+        db.query(PRConflictCheck).filter(PRConflictCheck.pr_id.in_(pr_ids)).delete(synchronize_session=False)
         db.query(PRFile).filter(PRFile.pr_id.in_(pr_ids)).delete(synchronize_session=False)
         db.query(PRReviewComment).filter(PRReviewComment.pr_id.in_(pr_ids)).delete(synchronize_session=False)
     db.query(Document).filter(Document.repo_id == repo.id).delete(synchronize_session=False)
@@ -416,6 +422,11 @@ async def delete_repo(repo_id: UUID, db: Session = Depends(get_db)) -> dict:
         )
     ).delete(synchronize_session=False)
     db.query(Conversation).filter(Conversation.repo_id == repo.id).delete(synchronize_session=False)
+    if issue_ids:
+        db.query(IssuePreflightJob).filter(IssuePreflightJob.issue_id.in_(issue_ids)).delete(synchronize_session=False)
+        db.query(IssuePreflightScope).filter(IssuePreflightScope.issue_id.in_(issue_ids)).delete(synchronize_session=False)
+    db.query(IssuePollCursor).filter(IssuePollCursor.repo_id == repo.id).delete(synchronize_session=False)
+    db.query(PRConflictPollState).filter(PRConflictPollState.repo_id == repo.id).delete(synchronize_session=False)
     db.query(Issue).filter(Issue.repo_id == repo.id).delete(synchronize_session=False)
     db.query(PullRequest).filter(PullRequest.repo_id == repo.id).delete(synchronize_session=False)
     db.query(WorkflowRun).filter(WorkflowRun.repo_id == repo.id).delete(synchronize_session=False)

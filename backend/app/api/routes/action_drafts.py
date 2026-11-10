@@ -4,12 +4,11 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
-from app.core.security import decrypt_token
 from app.db.models import ActionDraft, AuditLog, Issue, PullRequest, Repository, User
 from app.db.session import get_db
 from app.schemas.action_drafts import ActionDraftConfirmResponse, ActionDraftCreateRequest, ActionDraftResponse, AuditLogResponse
 from app.services.github.client import GitHubClient
+from app.services.github.user_auth import github_user_token
 from app.services.permissions import require_permission, write_audit_log
 
 router = APIRouter()
@@ -32,10 +31,12 @@ def _target_number(db: Session, draft: ActionDraft) -> int | None:
     return None
 
 
-async def _execute_github_draft(db: Session, draft: ActionDraft, repo: Repository) -> dict:
-    token = decrypt_token(repo.github_token_encrypted, settings.token_encryption_key) if repo.github_token_encrypted else None
-    client = GitHubClient(token=token, base_url=repo.api_base_url)
+async def _execute_github_draft(db: Session, draft: ActionDraft, repo: Repository, user: User) -> dict:
     draft_type = draft.draft_type.lower()
+    if draft_type == "send_report":
+        return {"status": "recorded", "message": "报告草稿已在 DevFlow AI 中标记为已发送，未接入外部消息渠道。"}
+    token = await github_user_token(db, user)
+    client = GitHubClient(token=token, base_url=repo.api_base_url)
     issue_number = _target_number(db, draft)
     if draft_type in {"issue_comment", "pr_comment", "comment"}:
         if issue_number is None:
@@ -57,8 +58,6 @@ async def _execute_github_draft(db: Session, draft: ActionDraft, repo: Repositor
         if not labels:
             raise RuntimeError("Label 草稿缺少 labels")
         return await client.add_issue_labels(repo.owner, repo.name, issue_number, [str(item) for item in labels])
-    if draft_type == "send_report":
-        return {"status": "recorded", "message": "报告草稿已在 DevFlow AI 中标记为已发送，未接入外部消息渠道。"}
     raise RuntimeError(f"暂不支持执行草稿类型：{draft.draft_type}")
 
 
@@ -169,7 +168,7 @@ async def confirm_action_draft(
     if repo is None:
         raise HTTPException(status_code=404, detail="未找到仓库")
     try:
-        result = await _execute_github_draft(db, draft, repo)
+        result = await _execute_github_draft(db, draft, repo, user)
         draft.status = "executed"
         draft.confirmed_by = user.id
         draft.executed_at = datetime.now(timezone.utc)

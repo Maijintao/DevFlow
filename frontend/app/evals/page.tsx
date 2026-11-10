@@ -546,7 +546,7 @@ export default function EvalsPage() {
               <option value="">请选择基线运行</option>
               {baselineOptions.map((item) => <option key={item.eval_id} value={item.eval_id}>{item.name} · {item.created_at ? new Date(item.created_at).toLocaleString("zh-CN") : "-"}</option>)}
             </select>
-            <button onClick={compareRuns} disabled={!baselineId || comparing} className="inline-flex items-center justify-center gap-2 rounded-md bg-slate-900 px-4 py-2 text-sm font-medium text-white disabled:opacity-40">
+            <button onClick={compareRuns} disabled={!baselineId || comparing} className="primary-button inline-flex items-center justify-center gap-2 px-4 py-2 text-sm font-medium disabled:opacity-40">
               {comparing ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <GitCompareArrows className="h-4 w-4" />}生成对比
             </button>
           </div>

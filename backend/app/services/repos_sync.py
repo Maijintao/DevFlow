@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -32,7 +33,11 @@ async def sync_repository(db: Session, repo: Repository, payload: RepoSyncReques
     token = decrypt_token(repo.github_token_encrypted, settings.token_encryption_key) if repo.github_token_encrypted else None
     base_url = repo.api_base_url
 
-    if payload.sync_issues:
+    if payload.sync_issues and settings.issue_preflight_enabled:
+        from app.services.issue_preflight import poll_repository
+
+        synced["issues"] = await poll_repository(repo.id)
+    elif payload.sync_issues:
         try:
             remote_issues = await list_issues(repo.owner, repo.name, token=token, limit=payload.limit, base_url=base_url)
         except httpx.HTTPStatusError as exc:
@@ -59,6 +64,7 @@ async def sync_repository(db: Session, repo: Repository, payload: RepoSyncReques
             remote_prs = await list_pull_requests(repo.owner, repo.name, token=token, limit=payload.limit, base_url=base_url)
         except httpx.HTTPStatusError as exc:
             raise HTTPException(status_code=400, detail=f"GitHub pull requests sync failed: {exc.response.status_code} {exc.response.text}") from exc
+        await asyncio.to_thread(lambda: db.query(Repository).filter(Repository.id == repo.id).with_for_update().one())
         for item in remote_prs:
             pr = db.query(PullRequest).filter(PullRequest.repo_id == repo.id, PullRequest.github_pr_id == item.get("id")).one_or_none()
             if pr is None:

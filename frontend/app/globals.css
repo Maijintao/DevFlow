@@ -8,8 +8,9 @@ body {
 }
 
 body {
-  color: #17212b;
-  background: #f4f6f7;
+  color: #0a0a0a;
+  background: #ecebe8;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
 }
 
 button,
@@ -20,8 +21,302 @@ textarea {
 }
 
 ::selection {
-  color: #ffffff;
-  background: #0f766e;
+  color: #0a0a0a;
+  background: #cbd4ff;
+}
+
+:focus-visible {
+  outline: 2px solid #5073ff;
+  outline-offset: 2px;
+}
+
+input::placeholder,
+textarea::placeholder {
+  color: #827e76;
+}
+
+.app-shell {
+  display: flex;
+  max-width: 1920px;
+  margin: 0 auto;
+}
+
+.app-navigation {
+  display: flex;
+  position: sticky;
+  top: 0;
+  flex: 0 0 190px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 24px;
+  height: 100dvh;
+  padding: 23px 12px;
+  border-right: 1px solid #ebe9e3;
+  background: #fff;
+}
+
+.app-brand {
+  position: relative;
+  display: block;
+  flex: none;
+  width: 166px;
+  height: 36px;
+  overflow: hidden;
+}
+
+.app-brand-image {
+  position: absolute;
+  top: 50%;
+  left: -14px;
+  width: 195px;
+  height: auto;
+  max-width: none;
+  transform: translateY(-50%);
+}
+
+.app-nav-items {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2px;
+  overflow-y: auto;
+  padding: 0;
+}
+
+.app-nav-link {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+  min-height: 36px;
+  padding: 7px 10px;
+  border-radius: 4px;
+  color: #5f5d57;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: background-color 120ms, transform 120ms, box-shadow 120ms;
+}
+
+.app-nav-link:hover {
+  background: #f7f6f3;
+}
+
+.app-nav-link[aria-current="page"] {
+  background: #efece6;
+  color: #0a0a0a;
+  font-weight: 600;
+}
+
+.app-content {
+  min-width: 0;
+  flex: 1;
+  padding: 12px;
+}
+
+.surface-card {
+  border-radius: 6px;
+  box-shadow: none;
+}
+
+.page-title {
+  border-bottom: 1px solid #d9d6cd;
+}
+
+.primary-button {
+  border-radius: 4px;
+}
+
+.app-content :is(button, a).bg-accent {
+  font-weight: 600;
+}
+
+.primary-button,
+.app-content :is(button, a).bg-accent {
+  background-color: #3857d1;
+  color: #fff;
+}
+
+.primary-button:hover:not(:disabled),
+.app-content :is(button, a).bg-accent:hover:not(:disabled) {
+  background-color: #304ab3;
+  color: #fff;
+}
+
+.workspace-shell {
+  height: calc(100dvh - 24px);
+  border: 1px solid #d9d6cd;
+  border-radius: 4px;
+  background: #fff;
+}
+
+.rag-studio,
+.knowledge-detail {
+  overflow: hidden;
+  border: 1px solid #d9d6cd;
+  border-radius: 4px;
+  background: #ecebe8;
+}
+
+.rag-studio {
+  height: calc(100dvh - 24px);
+}
+
+.workspace-sidebar {
+  border-right: 1px solid #ebe9e3;
+  background: #fff;
+}
+
+.workspace-sidebar-header,
+.workspace-overview,
+.workspace-panel-header {
+  border-bottom: 1px solid #ebe9e3;
+  background: #fff;
+}
+
+.workspace-main {
+  background: #ecebe8;
+}
+
+.workspace-overview {
+  padding: 16px 18px 14px;
+  border-bottom: 0;
+  background: #ecebe8;
+}
+
+.workspace-stats {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 116px), 1fr));
+}
+
+.workspace-panel,
+.workspace-chat {
+  background: #fff;
+}
+
+.workspace-panel {
+  border-left: 1px solid #ebe9e3;
+}
+
+.app-content .workspace-tabs button {
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: #5f5d57;
+  font-weight: 500;
+}
+
+.app-content .workspace-tabs button:hover,
+.app-content .workspace-tabs button.bg-accent:hover:not(:disabled) {
+  background: #fbfaf6;
+  color: #0a0a0a;
+}
+
+.app-content .workspace-tabs button[aria-pressed="true"] {
+  border-bottom-color: #5073ff;
+  background: transparent;
+  color: #0a0a0a;
+  font-weight: 600;
+}
+
+.workspace-chat {
+  border-top: 1px solid #ebe9e3;
+}
+
+.workspace-resizer {
+  border-color: #ebe9e3;
+  background: #ecebe8;
+}
+
+.workspace-composer {
+  border-top: 1px solid #ebe9e3;
+  background: #fff;
+}
+
+.workspace-message {
+  border: 1px solid #ebe9e3;
+  border-radius: 6px;
+}
+
+.workspace-metric {
+  border: 1px solid #ebe9e3;
+  border-radius: 6px;
+  background: #fff;
+}
+
+.project-dialog {
+  border: 1px solid #d9d6cd;
+  border-radius: 6px;
+  background: #fff;
+  box-shadow: 0 16px 40px -12px rgb(0 0 0 / 20%);
+}
+
+.project-dialog-header {
+  border-bottom: 1px solid #ebe9e3;
+  background: #fff;
+}
+
+@media (max-width: 1023px) {
+  .app-shell {
+    display: block;
+  }
+
+  .app-navigation {
+    position: relative;
+    height: auto;
+    gap: 12px;
+    padding: 10px 12px;
+    border-right: 0;
+    border-bottom: 1px solid #ebe9e3;
+  }
+
+  .app-nav-items {
+    width: 100%;
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+
+  .workspace-shell {
+    display: flex !important;
+    height: auto !important;
+    min-height: calc(100dvh - 160px);
+    flex-direction: column;
+    overflow: visible;
+  }
+
+  .rag-studio {
+    height: auto;
+    min-height: calc(100dvh - 160px);
+    overflow: visible;
+  }
+
+  .workspace-sidebar {
+    max-height: 260px;
+    border-right: 0;
+    border-bottom: 1px solid #ebe9e3;
+  }
+
+  .workspace-main {
+    display: flex !important;
+    flex-direction: column;
+  }
+
+  .workspace-resizer {
+    display: none;
+  }
+
+  .workspace-chat {
+    order: 1;
+    min-height: 520px;
+  }
+
+  .workspace-panel {
+    order: 2;
+    max-height: 560px;
+    border-top: 1px solid #ebe9e3;
+    border-left: 0;
+  }
 }
 
 pre {
@@ -42,7 +337,7 @@ pre {
   margin: 0.15rem 0 0;
   font-weight: 700;
   line-height: 1.35;
-  color: #17212b;
+  color: #0a0a0a;
 }
 
 .markdown-body h1 {
@@ -75,16 +370,16 @@ pre {
 
 .markdown-body code {
   border-radius: 0.25rem;
-  background: #f2eee8;
+  background: #efece6;
   padding: 0.08rem 0.3rem;
   font-size: 0.88em;
 }
 
 .markdown-body pre {
   overflow: auto;
-  border: 1px solid #dde5ea;
+  border: 1px solid #ebe9e3;
   border-radius: 0.5rem;
-  background: #fbf7f2;
+  background: #fbfaf6;
   padding: 0.75rem;
 }
 
@@ -94,7 +389,7 @@ pre {
 }
 
 .markdown-body blockquote {
-  border-left: 3px solid #14b8a6;
+  border-left: 3px solid #d9d6cd;
   padding-left: 0.75rem;
   color: #475569;
 }
@@ -113,18 +408,18 @@ pre {
 
 .markdown-body th,
 .markdown-body td {
-  border: 1px solid #dde5ea;
+  border: 1px solid #ebe9e3;
   padding: 0.45rem 0.6rem;
   text-align: left;
   vertical-align: top;
 }
 
 .markdown-body th {
-  background: #f3f7f8;
-  color: #17212b;
+  background: #efece6;
+  color: #0a0a0a;
   font-weight: 700;
 }
 
 .markdown-body tr:nth-child(even) td {
-  background: #fbf7f2;
+  background: #fbfaf6;
 }

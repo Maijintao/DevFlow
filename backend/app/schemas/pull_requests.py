@@ -42,6 +42,7 @@ class PullRequestResponse(BaseModel):
     merged_at: datetime | None = None
     created_at: datetime | None = None
     updated_at: datetime | None = None
+    conflict_status: str | None = None
     files: list[PRFileResponse] = []
     review_comments: list[PRReviewCommentResponse] = []
 
