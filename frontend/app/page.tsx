@@ -4562,6 +4562,7 @@ function WorkspaceDetail({
         </div>
       )}
       <div className="mt-3 whitespace-pre-wrap rounded-md bg-panel p-3 text-xs leading-6 text-slate-700">{body}</div>
+      {repo && issue && <IssuePreflight key={issue.id} issue={issue} />}
       {repo && issue && <GitHubIssueActions key={issue.id} repo={repo} issue={issue} onChanged={onGithubChange} />}
       {repo && pr && <GitHubMergeActions key={pr.id} repoId={repo.id} pr={pr} onChanged={onGithubChange} />}
       {pr?.files && pr.files.length > 0 && (
@@ -4577,6 +4578,160 @@ function WorkspaceDetail({
       )}
     </div>
   );
+}
+
+type PreflightStatement = { text: string; evidence_ids: string[] };
+type PreflightData = {
+  status: string;
+  report_is_current?: boolean;
+  base_commit_sha?: string | null;
+  working_tree_dirty?: boolean | null;
+  completed_at?: string | null;
+  error?: string | null;
+  unchecked_issues: number;
+  overlap_check_available: boolean;
+  declared_paths: string[];
+  overlaps: { issue_id: string; number: number; title: string; assignees: string[]; paths: string[] }[];
+  report: {
+    objective: PreflightStatement;
+    requirements: PreflightStatement[];
+    hard_constraints: PreflightStatement[];
+    affected_components: { path: string; description: string; evidence_ids: string[] }[];
+    contract_impacts: PreflightStatement[];
+    acceptance_criteria: PreflightStatement[];
+    test_recommendations: PreflightStatement[];
+    risks: PreflightStatement[];
+    open_questions: string[];
+    evidence: { id: string; type: string; title: string; content: string }[];
+  } | null;
+};
+
+function IssuePreflight({ issue }: { issue: Issue }) {
+  const [data, setData] = useState<PreflightData | null>(null);
+  const [error, setError] = useState("");
+  const [copyNotice, setCopyNotice] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [scopeText, setScopeText] = useState("");
+  const [editingScope, setEditingScope] = useState(false);
+  const pollDelay = data && !["not_started", "pending", "running"].includes(data.status) ? 60000 : 10000;
+
+  useEffect(() => {
+    let active = true;
+    async function load() {
+      try {
+        const result = await apiGet<PreflightData>(`/api/issues/${issue.id}/preflight`);
+        if (active) { setData(result); setError(""); }
+      } catch (reason) {
+        if (active) setError(getFriendlyError(reason));
+      }
+    }
+    void load();
+    const timer = window.setInterval(load, pollDelay);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [issue.id, pollDelay]);
+
+  async function recheck() {
+    setBusy(true);
+    setError("");
+    try {
+      await apiPost(`/api/issues/${issue.id}/preflight/recheck`, {});
+      setData(await apiGet<PreflightData>(`/api/issues/${issue.id}/preflight`));
+    } catch (reason) {
+      setError(getFriendlyError(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveScope() {
+    setBusy(true);
+    setError("");
+    try {
+      await apiPut(`/api/issues/${issue.id}/preflight/scope`, { paths: scopeText.split("\n").map((item) => item.trim()).filter(Boolean) });
+      setData(await apiGet<PreflightData>(`/api/issues/${issue.id}/preflight`));
+      setEditingScope(false);
+    } catch (reason) {
+      setError(getFriendlyError(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const labels: Record<string, string> = { disabled: "预分析未启用", not_started: "等待同步", pending: "等待分析", running: "正在分析", ready: "分析完成", stale: "需要更新", failed: "分析失败", superseded: "等待更新" };
+  const report = data?.report;
+  const sections: { title: string; items: PreflightStatement[] }[] = report ? [
+    { title: "明确需求", items: report.requirements },
+    { title: "必须遵守", items: report.hard_constraints },
+    { title: "接口与类型影响", items: report.contract_impacts },
+    { title: "验收条件", items: report.acceptance_criteria },
+    { title: "测试建议", items: report.test_recommendations },
+    { title: "需要关注", items: report.risks }
+  ] : [];
+
+  async function copyReport() {
+    if (!data || !report) return;
+    const lines = [`# Issue #${issue.number} ${issue.title}`, "", "## 报告状态", data.report_is_current ? "报告已更新" : "报告需要更新，请结合当前代码和需求查看。"];
+    if (data.working_tree_dirty) lines.push("分析时工作目录包含未提交的修改。");
+    if (data.base_commit_sha) lines.push(`代码版本：${data.base_commit_sha}`);
+    lines.push("", "## 开发目标", `${report.objective.text} [${report.objective.evidence_ids.join("、")}]`);
+    if (report.affected_components.length) {
+      lines.push("", "## 可能涉及的文件", ...report.affected_components.map((item) => `- ${item.path}：${item.description} [${item.evidence_ids.join("、")}]`));
+    }
+    if (data.declared_paths.length) lines.push("", "## 团队补充的文件", ...data.declared_paths.map((path) => `- ${path}`));
+    if (data.overlap_check_available) {
+      lines.push("", "## 相关协作");
+      if (data.overlaps.length) {
+        lines.push(...data.overlaps.map((item) => `- Issue #${item.number} ${item.title}；负责人：${item.assignees.join("、")}；共同涉及：${item.paths.join("、")}`));
+      } else {
+        lines.push("已完成分析的其他进行中 Issue 暂无共同文件。");
+      }
+      if (data.unchecked_issues) lines.push(`另有 ${data.unchecked_issues} 个已分配的 Issue 尚未完成有效分析。`);
+      lines.push("共同涉及文件表示需要沟通，具体修改范围仍需确认。");
+    } else {
+      lines.push("", "## 相关协作", "当前暂时无法比较相关文件。");
+    }
+    for (const section of sections) {
+      if (section.items.length) lines.push("", `## ${section.title}`, ...section.items.map((item) => `- ${item.text} [${item.evidence_ids.join("、")}]`));
+    }
+    if (report.open_questions.length) lines.push("", "## 需要确认", ...report.open_questions.map((item) => `- ${item}`));
+    if (report.evidence.length) {
+      lines.push("", "## 分析依据");
+      for (const item of report.evidence) lines.push("", `### [${item.id}] ${item.title}`, item.content);
+    }
+    setCopyNotice("");
+    if (!navigator.clipboard) {
+      setCopyNotice("浏览器无法使用剪贴板，请通过安全连接访问");
+      return;
+    }
+    await navigator.clipboard.writeText(lines.join("\n"));
+    setCopyNotice("分析内容已复制");
+  }
+
+  return <section className="mt-4 border-t border-line pt-3" aria-label="开发准备">
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <div><h3 className="text-sm font-semibold text-ink">开发准备</h3><p className="mt-1 text-xs text-slate-600" role="status">{data ? labels[data.status] ?? data.status : "正在读取分析状态"}</p></div>
+      <div className="flex flex-wrap gap-2">
+        {report && <button type="button" onClick={copyReport} className="rounded-md border border-line px-3 py-1.5 text-xs hover:bg-panel">复制分析</button>}
+        {issue.state === "open" && <button type="button" onClick={recheck} disabled={busy || !data || data.status === "disabled" || data.status === "pending" || data.status === "running"} className="rounded-md border border-line px-3 py-1.5 text-xs hover:bg-panel disabled:opacity-50">{busy ? "正在提交" : "重新分析"}</button>}
+      </div>
+    </div>
+    {copyNotice && <p role="status" className="mt-2 text-xs text-slate-700">{copyNotice}</p>}
+    {error && <p role="alert" className="mt-2 text-xs text-rose-700">{error}</p>}
+    {data?.error && <p className="mt-2 text-xs text-rose-700">{data.error}</p>}
+    {data && !report && data.status !== "disabled" && <p className="mt-3 text-xs leading-5 text-slate-600">后台会同步 Issue 并生成开发建议，完成后自动显示。</p>}
+    {data && <div className="mt-3 text-xs leading-5 text-slate-700"><div className="flex items-center justify-between gap-2"><h4 className="font-medium text-ink">团队补充的文件</h4><button type="button" onClick={() => { setScopeText(data.declared_paths.join("\n")); setEditingScope(!editingScope); }} className="text-accent hover:underline">{editingScope ? "取消" : "编辑文件"}</button></div>{data.declared_paths.length > 0 ? <ul className="mt-1 space-y-1">{data.declared_paths.map((path) => <li key={path} className="break-all">{path}</li>)}</ul> : <p className="mt-1 text-slate-600">可以补充开发过程中发现的文件，供团队查看。</p>}{editingScope && <div className="mt-2"><label htmlFor={`preflight-scope-${issue.id}`} className="block text-slate-600">每行填写一个仓库内的文件路径</label><textarea id={`preflight-scope-${issue.id}`} value={scopeText} onChange={(event) => setScopeText(event.target.value)} className="mt-1 min-h-20 w-full rounded-md border border-line p-2" /><button type="button" onClick={saveScope} disabled={busy} className="mt-2 rounded-md border border-line px-3 py-1.5 hover:bg-panel disabled:opacity-50">{busy ? "正在保存" : "保存文件"}</button></div>}</div>}
+    {data && (data.report_is_current || data.declared_paths.length > 0) && <div className="mt-3 text-xs leading-5 text-slate-700"><h4 className="font-medium text-ink">相关协作</h4>{!data.overlap_check_available ? <p className="mt-1">当前代码版本尚未确认，暂时无法比较相关文件。</p> : data.overlaps.length > 0 ? <ul className="mt-1 space-y-2">{data.overlaps.map((item) => <li key={item.issue_id} className="rounded-md bg-amber-50 p-2 text-amber-900"><p>Issue #{item.number} {item.title} · 负责人：{item.assignees.join("、")}</p><p className="mt-1 break-all">共同涉及：{item.paths.join("、")}</p></li>)}</ul> : <p className="mt-1">已完成分析的其他进行中 Issue 暂无共同文件。</p>}{data.unchecked_issues > 0 && <p className="mt-1">另有 {data.unchecked_issues} 个已分配的 Issue 尚未完成有效分析。</p>}<p className="mt-1 text-slate-500">共同涉及文件表示需要沟通，具体修改范围仍需确认。</p></div>}
+    {report && <div className="mt-3 space-y-3 text-xs leading-5 text-slate-700">
+      {!data?.report_is_current && <p className="rounded-md bg-amber-50 p-2 text-amber-800">这份报告需要更新，请结合当前代码和需求查看。</p>}
+      {data?.working_tree_dirty && <p className="rounded-md bg-amber-50 p-2 text-amber-800">分析时工作目录包含未提交的修改。</p>}
+      <div><h4 className="font-medium text-ink">开发目标</h4><p className="mt-1">{report.objective.text} <span className="text-slate-500">[{report.objective.evidence_ids.join("、")}]</span></p></div>
+      {report.affected_components.length > 0 && <div><h4 className="font-medium text-ink">可能涉及的文件</h4><ul className="mt-1 space-y-1">{report.affected_components.map((item, index) => <li key={`${item.path}-${index}`}><span className="break-all font-medium text-ink">{item.path}</span>：{item.description} <span className="text-slate-500">[{item.evidence_ids.join("、")}]</span></li>)}</ul></div>}
+      {sections.filter((section) => section.items.length > 0).map((section) => <div key={section.title}><h4 className="font-medium text-ink">{section.title}</h4><ul className="mt-1 list-disc space-y-1 pl-4">{section.items.map((item, index) => <li key={index}>{item.text} <span className="text-slate-500">[{item.evidence_ids.join("、")}]</span></li>)}</ul></div>)}
+      {report.open_questions.length > 0 && <div><h4 className="font-medium text-ink">需要确认</h4><ul className="mt-1 list-disc space-y-1 pl-4">{report.open_questions.map((item, index) => <li key={index}>{item}</li>)}</ul></div>}
+      <details><summary className="cursor-pointer font-medium text-ink">查看分析依据</summary><ul className="mt-2 space-y-2">{report.evidence.map((item) => <li key={item.id} className="rounded-md bg-panel p-2"><p className="break-all font-medium">[{item.id}] {item.title}</p><p className="mt-1 whitespace-pre-wrap break-words">{item.content}</p></li>)}</ul></details>
+      {data?.base_commit_sha && <p className="break-all text-slate-500">代码版本：{data.base_commit_sha}</p>}
+    </div>}
+  </section>;
 }
 
 function GitHubIssueCreate({ repoId, onChanged }: { repoId: string; onChanged: () => void }) {

@@ -89,6 +89,12 @@ class Settings(BaseSettings):
     auto_sync_enabled: bool = True
     auto_sync_interval_seconds: int = 300
     auto_sync_limit: int = 50
+    issue_preflight_enabled: bool = True
+    issue_poll_interval_seconds: int = 60
+    issue_poll_overlap_seconds: int = 120
+    issue_preflight_workers: int = 2
+    issue_preflight_max_attempts: int = 3
+    issue_preflight_lease_seconds: int = 300
 
     model_config = SettingsConfigDict(env_file=("../.env", ".env"), env_file_encoding="utf-8", extra="ignore")
 

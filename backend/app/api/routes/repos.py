@@ -11,7 +11,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from app.db.models import ActionDraft, AgentRun, AgentTaskRun, AgentWorkflowRun, AnalysisResult, AuditLog, ChatFeedback, ChatMessage, ChatSession, CodeRelation, CodeSymbol, Conversation, ConversationMemory, Document, EvidenceItem, Issue, KnowledgeBaseConfig, KnowledgeGraphEdge, KnowledgeSourceDocument, MemoryCandidate, PRFile, PRReviewComment, ProjectIndexState, ProjectMember, PullRequest, RecallEvent, Repository, RetrievalTestRun, ThreadMemory, WorkflowRun, Workspace
+from app.db.models import ActionDraft, AgentRun, AgentTaskRun, AgentWorkflowRun, AnalysisResult, AuditLog, ChatFeedback, ChatMessage, ChatSession, CodeRelation, CodeSymbol, Conversation, ConversationMemory, Document, EvidenceItem, Issue, IssuePollCursor, IssuePreflightJob, IssuePreflightScope, KnowledgeBaseConfig, KnowledgeGraphEdge, KnowledgeSourceDocument, MemoryCandidate, PRFile, PRReviewComment, ProjectIndexState, ProjectMember, PullRequest, RecallEvent, Repository, RetrievalTestRun, ThreadMemory, WorkflowRun, Workspace
 from app.db.session import get_db
 from app.schemas.repos import RepoConnectRequest, RepoConnectResponse, RepoResponse, RepoSyncRequest, RepoSyncResponse
 from app.core.config import settings
@@ -421,6 +421,10 @@ async def delete_repo(repo_id: UUID, db: Session = Depends(get_db)) -> dict:
         )
     ).delete(synchronize_session=False)
     db.query(Conversation).filter(Conversation.repo_id == repo.id).delete(synchronize_session=False)
+    if issue_ids:
+        db.query(IssuePreflightJob).filter(IssuePreflightJob.issue_id.in_(issue_ids)).delete(synchronize_session=False)
+        db.query(IssuePreflightScope).filter(IssuePreflightScope.issue_id.in_(issue_ids)).delete(synchronize_session=False)
+    db.query(IssuePollCursor).filter(IssuePollCursor.repo_id == repo.id).delete(synchronize_session=False)
     db.query(Issue).filter(Issue.repo_id == repo.id).delete(synchronize_session=False)
     db.query(PullRequest).filter(PullRequest.repo_id == repo.id).delete(synchronize_session=False)
     db.query(WorkflowRun).filter(WorkflowRun.repo_id == repo.id).delete(synchronize_session=False)

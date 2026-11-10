@@ -1,10 +1,13 @@
 import asyncio
 
 import httpx
+from alembic import command
+from alembic.config import Config
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import inspect, text
+from pathlib import Path
 
 from app.api.routes import (
     action_drafts,
@@ -33,6 +36,7 @@ from app.db.models import Base
 from app.db.session import SessionLocal, engine
 from app.services.access_control import authorize_request, current_user_id
 from app.services.scheduler import periodic_repo_sync_loop
+from app.services.issue_preflight import issue_poll_loop, issue_preflight_worker
 from app.services.rag.vector_store import MilvusUnavailableError
 
 
@@ -124,7 +128,14 @@ def create_app() -> FastAPI:
     @app.on_event("startup")
     async def create_demo_tables() -> None:
         # 课程项目默认自动建表；生产风格流程会在后续加入 Alembic 迁移。
-        Base.metadata.create_all(bind=engine)
+        preflight_tables = {"issue_poll_cursors", "issue_preflight_jobs", "issue_preflight_scopes"}
+        Base.metadata.create_all(bind=engine, tables=[table for table in Base.metadata.sorted_tables if table.name not in preflight_tables])
+        migration_config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
+        with engine.begin() as connection:
+            if connection.dialect.name == "postgresql":
+                connection.execute(text("SELECT pg_advisory_xact_lock(hashtext('devflow_schema_migrations'))"))
+            migration_config.attributes["connection"] = connection
+            command.upgrade(migration_config, "head")
         inspector = inspect(engine)
         if "users" in inspector.get_table_names():
             columns = {column["name"] for column in inspector.get_columns("users")}
@@ -193,12 +204,20 @@ def create_app() -> FastAPI:
         delete_milvus_documents(source_types=["code_file"], strict=False)
         if settings.auto_sync_enabled:
             app.state.repo_sync_task = asyncio.create_task(periodic_repo_sync_loop())
+        if settings.issue_preflight_enabled:
+            app.state.issue_poll_task = asyncio.create_task(issue_poll_loop())
+            app.state.issue_preflight_tasks = [asyncio.create_task(issue_preflight_worker()) for _ in range(settings.issue_preflight_workers)]
 
     @app.on_event("shutdown")
     async def stop_background_tasks() -> None:
         task = getattr(app.state, "repo_sync_task", None)
         if task:
             task.cancel()
+        poll_task = getattr(app.state, "issue_poll_task", None)
+        if poll_task:
+            poll_task.cancel()
+        for worker in getattr(app.state, "issue_preflight_tasks", []):
+            worker.cancel()
 
     return app
 

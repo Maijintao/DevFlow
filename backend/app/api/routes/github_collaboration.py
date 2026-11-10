@@ -145,6 +145,7 @@ async def remove_member(repo_id: UUID, member_id: UUID, user: User = Depends(req
 async def create_issue(repo_id: UUID, payload: IssueRequest, user: User = Depends(require_login), db: Session = Depends(get_db)) -> dict:
     repo = _repo(db, repo_id)
     _member(db, repo_id, user, {"leader", "developer", "product_manager"})
+    repo = db.query(Repository).filter(Repository.id == repo_id).with_for_update().one()
     if not payload.title.strip():
         raise HTTPException(status_code=400, detail="请输入 Issue 标题")
     client = await _client(db, user, repo)

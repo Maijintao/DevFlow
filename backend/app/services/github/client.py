@@ -29,7 +29,7 @@ class GitHubClient:
             response.raise_for_status()
             return response.content
 
-    async def get_all(self, path: str) -> list[dict[str, Any]]:
+    async def get_all(self, path: str, params: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         url: str | None = f"{self.base_url}{path}"
         expected = urlsplit(self.base_url)
         items: list[dict[str, Any]] = []
@@ -38,7 +38,7 @@ class GitHubClient:
                 current = urlsplit(url)
                 if (current.scheme, current.netloc) != (expected.scheme, expected.netloc):
                     raise RuntimeError("GitHub 分页地址不属于当前服务")
-                response = await client.get(url, headers=self._headers(), params={"per_page": 100} if not items else None)
+                response = await client.get(url, headers=self._headers(), params={"per_page": 100, **(params or {})} if url == f"{self.base_url}{path}" else None)
                 response.raise_for_status()
                 items.extend(response.json())
                 url = response.links.get("next", {}).get("url")

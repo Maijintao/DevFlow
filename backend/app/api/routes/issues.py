@@ -1,23 +1,148 @@
 import asyncio
 import json
+import subprocess
 from collections.abc import AsyncIterator
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.db.models import AnalysisResult, Conversation, Document, Issue, Repository
+from app.core.config import settings
+from app.db.models import AnalysisResult, Conversation, Document, Issue, IssuePollCursor, IssuePreflightJob, IssuePreflightScope, ProjectMember, Repository
 from app.db.session import get_db
+from app.schemas.issue_preflight import PreflightScopeUpdate
 from app.schemas.issues import IssueAnalysisResponse, IssueResponse
 from app.services.agents.issue_agent import IssueAgent
 from app.services.chat_memory import ContextAssembler
-from app.services.code_search import search_repository_code
+from app.services.code_search import repository_checkout_path, resolve_search_root, search_repository_code
+from app.services.issue_preflight import ANALYZER_VERSION, checkout_state, document_fingerprint, enqueue_issue, issue_fingerprint, preflight_wake
+from app.services.permissions import require_current_user
 from app.services.rag.retrieval import search_similar_documents
 
 router = APIRouter()
 
 PROJECT_DOC_TYPES = {"knowledge_file", "memory_note", "project_doc"}
+
+
+def _preflight_current(job: IssuePreflightJob, issue: Issue, commit: str | None, remote_commit: str | None, dirty: bool, documents: str) -> bool:
+    return bool(job.status == "ready" and job.analyzer_version == ANALYZER_VERSION and job.fingerprint == issue_fingerprint(issue) and not dirty and not job.working_tree_dirty and job.base_commit_sha == commit == remote_commit and commit is not None and (job.result_json or {}).get("document_fingerprint") == documents)
+
+
+def _preflight_paths(report: dict) -> set[str]:
+    paths = {item["path"] for item in report.get("affected_components", [])}
+    impact_evidence = {evidence_id for item in report.get("contract_impacts", []) for evidence_id in item.get("evidence_ids", [])}
+    paths.update(item["path"] for item in report.get("evidence", []) if item.get("type") == "code" and item.get("path") and item.get("id") in impact_evidence)
+    return paths
+
+
+@router.get("/issues/{issue_id}/preflight")
+async def get_issue_preflight(issue_id: UUID, db: Session = Depends(get_db)) -> dict:
+    issue = db.get(Issue, issue_id)
+    if issue is None:
+        raise HTTPException(status_code=404, detail="未找到 Issue")
+    repo = db.get(Repository, issue.repo_id)
+    jobs = db.query(IssuePreflightJob).filter(IssuePreflightJob.issue_id == issue.id).order_by(IssuePreflightJob.created_at.desc(), IssuePreflightJob.id.desc()).all()
+    latest = jobs[0] if jobs else None
+    report_job = next((job for job in jobs if job.result_json), None)
+    scope = db.get(IssuePreflightScope, issue.id)
+    declared_paths = scope.paths if scope else []
+    try:
+        commit, dirty = checkout_state(repo)
+    except (OSError, RuntimeError, subprocess.SubprocessError):
+        commit, dirty = None, True
+    documents = document_fingerprint(db, repo.id)
+    cursor = db.get(IssuePollCursor, repo.id)
+    remote_commit = cursor.remote_commit_sha if cursor else None
+    current = bool(report_job and latest and report_job.id == latest.id and _preflight_current(report_job, issue, commit, remote_commit, dirty, documents))
+    status = (latest.status if latest.status != "ready" or current else "stale") if latest else ("not_started" if settings.issue_preflight_enabled else "disabled")
+    report = report_job.result_json if report_job else None
+    overlaps = []
+    unchecked = 0
+    overlap_check_available = bool(not dirty and commit is not None and commit == remote_commit and (current or declared_paths))
+    if overlap_check_available:
+        paths = set(declared_paths)
+        if current and report:
+            paths.update(_preflight_paths(report))
+        others = db.query(Issue).filter(Issue.repo_id == issue.repo_id, Issue.id != issue.id, Issue.state == "open").all()
+        for other in others:
+            if not other.assignees:
+                continue
+            other_job = db.query(IssuePreflightJob).filter(IssuePreflightJob.issue_id == other.id).order_by(IssuePreflightJob.created_at.desc(), IssuePreflightJob.id.desc()).first()
+            other_scope = db.get(IssuePreflightScope, other.id)
+            other_paths = set(other_scope.paths if other_scope else [])
+            if not other_job or not _preflight_current(other_job, other, commit, remote_commit, dirty, documents):
+                unchecked += 1
+            else:
+                other_paths.update(_preflight_paths(other_job.result_json or {}))
+            common = sorted(paths & other_paths)
+            if common:
+                overlaps.append({"issue_id": str(other.id), "number": other.number, "title": other.title, "assignees": other.assignees, "paths": common})
+    return {"status": status, "report_is_current": current, "report": report, "declared_paths": declared_paths, "base_commit_sha": report_job.base_commit_sha if report_job else None, "remote_commit_sha": remote_commit, "working_tree_dirty": report_job.working_tree_dirty if report_job else None, "completed_at": report_job.completed_at if report_job else None, "error": latest.error if latest else None, "overlap_check_available": overlap_check_available, "overlaps": overlaps, "unchecked_issues": unchecked}
+
+
+@router.put("/issues/{issue_id}/preflight/scope")
+async def update_issue_preflight_scope(issue_id: UUID, payload: PreflightScopeUpdate, db: Session = Depends(get_db)) -> dict:
+    issue = db.query(Issue).filter(Issue.id == issue_id).with_for_update().one_or_none()
+    if issue is None:
+        raise HTTPException(status_code=404, detail="未找到 Issue")
+    user = require_current_user(db)
+    member = db.get(ProjectMember, (issue.repo_id, user.id))
+    if member is None or member.role not in {"leader", "developer"}:
+        raise HTTPException(status_code=403, detail="只有项目组长或组员可以更新涉及文件")
+    repo = db.get(Repository, issue.repo_id)
+    paths = []
+    for value in payload.paths:
+        raw_path = value.strip()
+        if not raw_path:
+            continue
+        try:
+            root, path = resolve_search_root(repository_checkout_path(repo), raw_path)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"无法读取文件：{raw_path}") from exc
+        if not path.is_file():
+            raise HTTPException(status_code=400, detail=f"未找到文件：{raw_path}")
+        relative = path.relative_to(root).as_posix()
+        if relative not in paths:
+            paths.append(relative)
+    scope = db.get(IssuePreflightScope, issue.id)
+    if scope is None:
+        scope = IssuePreflightScope(issue_id=issue.id, paths=paths, updated_by=user.id)
+        db.add(scope)
+    else:
+        scope.paths = paths
+        scope.updated_by = user.id
+    db.commit()
+    return {"paths": paths}
+
+
+@router.post("/issues/{issue_id}/preflight/recheck")
+async def recheck_issue_preflight(issue_id: UUID, db: Session = Depends(get_db)) -> dict:
+    if not settings.issue_preflight_enabled:
+        raise HTTPException(status_code=409, detail="Issue 预分析尚未启用")
+    issue = db.query(Issue).filter(Issue.id == issue_id).with_for_update().one_or_none()
+    if issue is None:
+        raise HTTPException(status_code=404, detail="未找到 Issue")
+    user = require_current_user(db)
+    member = db.get(ProjectMember, (issue.repo_id, user.id))
+    if member is None or member.role not in {"leader", "developer"}:
+        raise HTTPException(status_code=403, detail="只有项目组长或组员可以重新分析")
+    if issue.state != "open":
+        raise HTTPException(status_code=409, detail="该 Issue 已关闭")
+    job = enqueue_issue(db, issue, force=True)
+    db.commit()
+    preflight_wake.set()
+    return {"status": job.status, "job_id": str(job.id)}
+
+
+@router.get("/repos/{repo_id}/preflight/status")
+async def repo_preflight_status(repo_id: UUID, db: Session = Depends(get_db)) -> dict:
+    if db.get(Repository, repo_id) is None:
+        raise HTTPException(status_code=404, detail="未找到仓库")
+    cursor = db.get(IssuePollCursor, repo_id)
+    counts = dict(db.query(IssuePreflightJob.status, func.count(IssuePreflightJob.id)).join(Issue, IssuePreflightJob.issue_id == Issue.id).filter(Issue.repo_id == repo_id).group_by(IssuePreflightJob.status).all())
+    return {"enabled": settings.issue_preflight_enabled, "last_success_at": cursor.last_success_at if cursor else None, "last_error": cursor.last_error if cursor else None, "remote_commit_sha": cursor.remote_commit_sha if cursor else None, "remote_error": cursor.remote_error if cursor else None, "jobs": counts}
 PUBLIC_REASONING_PROMPT = """
 你是 DevFlow AI 的 Issue Agent。请用中文流式输出一段“公开分析过程”，帮助用户理解你如何分析当前 Issue。
 要求：

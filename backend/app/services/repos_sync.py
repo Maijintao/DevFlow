@@ -32,7 +32,11 @@ async def sync_repository(db: Session, repo: Repository, payload: RepoSyncReques
     token = decrypt_token(repo.github_token_encrypted, settings.token_encryption_key) if repo.github_token_encrypted else None
     base_url = repo.api_base_url
 
-    if payload.sync_issues:
+    if payload.sync_issues and settings.issue_preflight_enabled:
+        from app.services.issue_preflight import poll_repository
+
+        synced["issues"] = await poll_repository(repo.id)
+    elif payload.sync_issues:
         try:
             remote_issues = await list_issues(repo.owner, repo.name, token=token, limit=payload.limit, base_url=base_url)
         except httpx.HTTPStatusError as exc:
