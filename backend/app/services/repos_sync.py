@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -63,6 +64,7 @@ async def sync_repository(db: Session, repo: Repository, payload: RepoSyncReques
             remote_prs = await list_pull_requests(repo.owner, repo.name, token=token, limit=payload.limit, base_url=base_url)
         except httpx.HTTPStatusError as exc:
             raise HTTPException(status_code=400, detail=f"GitHub pull requests sync failed: {exc.response.status_code} {exc.response.text}") from exc
+        await asyncio.to_thread(lambda: db.query(Repository).filter(Repository.id == repo.id).with_for_update().one())
         for item in remote_prs:
             pr = db.query(PullRequest).filter(PullRequest.repo_id == repo.id, PullRequest.github_pr_id == item.get("id")).one_or_none()
             if pr is None:

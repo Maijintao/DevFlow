@@ -37,6 +37,7 @@ from app.db.session import SessionLocal, engine
 from app.services.access_control import authorize_request, current_user_id
 from app.services.scheduler import periodic_repo_sync_loop
 from app.services.issue_preflight import issue_poll_loop, issue_preflight_worker
+from app.services.pr_conflict import poll_loop as pr_conflict_poll_loop, worker as pr_conflict_worker
 from app.services.rag.vector_store import MilvusUnavailableError
 
 
@@ -128,7 +129,7 @@ def create_app() -> FastAPI:
     @app.on_event("startup")
     async def create_demo_tables() -> None:
         # 课程项目默认自动建表；生产风格流程会在后续加入 Alembic 迁移。
-        preflight_tables = {"issue_poll_cursors", "issue_preflight_jobs", "issue_preflight_scopes"}
+        preflight_tables = {"issue_poll_cursors", "issue_preflight_jobs", "issue_preflight_scopes", "pr_conflict_checks", "pr_conflict_poll_states"}
         Base.metadata.create_all(bind=engine, tables=[table for table in Base.metadata.sorted_tables if table.name not in preflight_tables])
         migration_config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
         with engine.begin() as connection:
@@ -207,6 +208,11 @@ def create_app() -> FastAPI:
         if settings.issue_preflight_enabled:
             app.state.issue_poll_task = asyncio.create_task(issue_poll_loop())
             app.state.issue_preflight_tasks = [asyncio.create_task(issue_preflight_worker()) for _ in range(settings.issue_preflight_workers)]
+        if settings.pr_conflict_enabled:
+            app.state.pr_conflict_poll_task = asyncio.create_task(pr_conflict_poll_loop())
+            app.state.pr_conflict_tasks = [asyncio.create_task(pr_conflict_worker("check")) for _ in range(settings.pr_conflict_workers)]
+            app.state.pr_conflict_tasks += [asyncio.create_task(pr_conflict_worker("detail")) for _ in range(settings.pr_conflict_detail_workers)]
+            app.state.pr_conflict_tasks.append(asyncio.create_task(pr_conflict_worker("advice")))
 
     @app.on_event("shutdown")
     async def stop_background_tasks() -> None:
@@ -217,6 +223,11 @@ def create_app() -> FastAPI:
         if poll_task:
             poll_task.cancel()
         for worker in getattr(app.state, "issue_preflight_tasks", []):
+            worker.cancel()
+        pr_poll = getattr(app.state, "pr_conflict_poll_task", None)
+        if pr_poll:
+            pr_poll.cancel()
+        for worker in getattr(app.state, "pr_conflict_tasks", []):
             worker.cancel()
 
     return app

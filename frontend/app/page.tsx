@@ -81,6 +81,7 @@ type PullRequest = {
   merged_at?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
+  conflict_status?: string | null;
   files?: PRFile[];
 };
 
@@ -903,6 +904,7 @@ export default function DashboardPage() {
   const [expandedRepoIds, setExpandedRepoIds] = useState<Record<string, boolean>>({});
   const [issues, setIssues] = useState<Issue[]>([]);
   const [prs, setPrs] = useState<PullRequest[]>([]);
+  const [prRefreshError, setPrRefreshError] = useState("");
   const [runs, setRuns] = useState<WorkflowRun[]>([]);
   const [message, setMessage] = useState("");
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -1625,6 +1627,18 @@ export default function DashboardPage() {
   useEffect(() => {
     refreshRepoList();
   }, []);
+
+  useEffect(() => {
+    if (!selectedRepo?.id || workspaceTab !== "PR") return;
+    let active = true;
+    const repoId = selectedRepo.id;
+    async function refreshPullRequests() {
+      const items = await apiGet<PullRequest[]>(`/api/repos/${repoId}/pull-requests`);
+      if (active) { setPrs(items); setPrRefreshError(""); }
+    }
+    const timer = window.setInterval(() => { void refreshPullRequests().catch((reason) => { if (active) setPrRefreshError(getFriendlyError(reason)); }); }, 10000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [selectedRepo?.id, workspaceTab]);
 
   useEffect(() => {
     if (workspaceTab === "技能&MCP" && !mcpRuntime && !skillRuntimeLoading) {
@@ -2809,6 +2823,7 @@ export default function DashboardPage() {
 
           {!hasWorkspaceDetail && workspaceTab === "PR" && (
             <div className="mt-4 space-y-3">
+              {prRefreshError && <p role="alert" className="text-xs text-rose-700">PR 列表更新失败：{prRefreshError}</p>}
               {prCategoryMeta.map((category) => {
                 const items = filteredPrs.filter((item) => classifyPr(item) === category.key);
                 const groupKey = `pr-${category.key}`;
@@ -4564,6 +4579,7 @@ function WorkspaceDetail({
       <div className="mt-3 whitespace-pre-wrap rounded-md bg-panel p-3 text-xs leading-6 text-slate-700">{body}</div>
       {repo && issue && <IssuePreflight key={`preflight-${issue.id}`} issue={issue} />}
       {repo && issue && <GitHubIssueActions key={issue.id} repo={repo} issue={issue} onChanged={onGithubChange} />}
+      {repo && pr && <PRConflictPanel key={`conflict-${pr.id}`} pr={pr} />}
       {repo && pr && <GitHubMergeActions key={pr.id} repoId={repo.id} pr={pr} onChanged={onGithubChange} />}
       {pr?.files && pr.files.length > 0 && (
         <div className="mt-3 space-y-1.5">
@@ -4578,6 +4594,82 @@ function WorkspaceDetail({
       )}
     </div>
   );
+}
+
+type PRConflictData = {
+  status: string;
+  error?: string | null;
+  head_sha?: string;
+  base_sha?: string;
+  checked_at?: string | null;
+  detail_status?: string;
+  detail_error?: string | null;
+  conflict_files: { path: string; target_path?: string | null; pr_path?: string | null; target_diff?: string | null; pr_diff?: string | null }[];
+  related_prs: { id: string; number: number; title: string; paths: string[] }[];
+  advice_status?: string;
+  advice_error?: string | null;
+  advice?: { summary: string; files: { path: string; explanation: string; suggestion: string }[] } | null;
+};
+
+function PRConflictPanel({ pr }: { pr: PullRequest }) {
+  const [data, setData] = useState<PRConflictData | null>(null);
+  const [error, setError] = useState("");
+  const [notice, setNotice] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    async function load() {
+      const result = await apiGet<PRConflictData>(`/api/pull-requests/${pr.id}/conflict-check`);
+      if (active) { setData(result); setError(""); }
+    }
+    void load().catch((reason) => { if (active) setError(getFriendlyError(reason)); });
+    const timer = window.setInterval(() => { void load().catch((reason) => { if (active) setError(getFriendlyError(reason)); }); }, 10000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [pr.id]);
+
+  async function recheck() {
+    setBusy(true);
+    setError("");
+    try {
+      await apiPost(`/api/pull-requests/${pr.id}/conflict-check/recheck`, {});
+      setData(await apiGet<PRConflictData>(`/api/pull-requests/${pr.id}/conflict-check`));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function copyAdvice() {
+    if (!data?.advice) return;
+    if (!navigator.clipboard) {
+      setNotice("浏览器无法使用剪贴板，请通过安全连接访问");
+      return;
+    }
+    const lines = [`# PR #${pr.number} ${pr.title}`, "", data.advice.summary];
+    for (const item of data.advice.files) lines.push("", `## ${item.path}`, item.explanation, item.suggestion);
+    await navigator.clipboard.writeText(lines.join("\n"));
+    setNotice("处理建议已复制");
+  }
+
+  const labels: Record<string, string> = { pending: "正在检查", checking: "正在检查", clear: "当前没有合并冲突", conflict: "存在合并冲突", unavailable: "暂时无法检查", disabled: "冲突检查未启用", closed: "PR 已关闭" };
+  return <section className="mt-4 border-t border-line pt-3" aria-label="合并冲突检查">
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <div><h3 className="text-sm font-semibold text-ink">合并冲突检查</h3><p role="status" className={`mt-1 text-xs ${data?.status === "conflict" ? "text-rose-700" : "text-slate-600"}`}>{data ? labels[data.status] ?? data.status : "正在读取检查结果"}</p></div>
+      {pr.state === "open" && <button type="button" onClick={() => { void recheck().catch((reason) => setError(getFriendlyError(reason))); }} disabled={busy || !data || data.status === "disabled" || data.status === "pending" || data.status === "checking"} className="rounded-md border border-line px-3 py-1.5 text-xs hover:bg-panel disabled:opacity-50">{busy ? "正在提交" : "重新检查"}</button>}
+    </div>
+    {(error || data?.error) && <p role="alert" className="mt-2 text-xs text-rose-700">{error || data?.error}</p>}
+    {data?.status === "conflict" && <div className="mt-3 space-y-2 text-xs leading-5 text-slate-700">
+      {data.detail_status === "pending" || data.detail_status === "running" || data.detail_status === "waiting" ? <p>正在定位冲突文件。</p> : null}
+      {data.detail_error && <p className="text-rose-700">{data.detail_error}</p>}
+      {data.conflict_files.map((file) => <div key={file.path} className="rounded-md bg-rose-50 p-2"><p className="break-all font-medium text-rose-900">{file.path}</p><details className="mt-1"><summary className="cursor-pointer">查看双方修改</summary><div className="mt-2 grid gap-2"><div><p className="font-medium">目标分支</p><pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-all">{file.target_diff || "暂无文本差异"}</pre></div><div><p className="font-medium">PR 分支</p><pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-all">{file.pr_diff || "暂无文本差异"}</pre></div></div></details></div>)}
+      {data.advice_status === "pending" || data.advice_status === "running" ? <p>正在生成处理建议。</p> : null}
+      {data.advice_error && <p className="text-rose-700">{data.advice_error}</p>}
+      {data.advice && <div><div className="flex items-center justify-between gap-2"><h4 className="font-medium text-ink">处理建议</h4><button type="button" onClick={() => { void copyAdvice().catch((reason) => setError(getFriendlyError(reason))); }} className="text-accent hover:underline">复制建议</button></div><p className="mt-1">{data.advice.summary}</p><ul className="mt-2 space-y-2">{data.advice.files.map((item) => <li key={item.path}><p className="break-all font-medium">{item.path}</p><p>{item.explanation}</p><p>{item.suggestion}</p></li>)}</ul>{notice && <p role="status" className="mt-2">{notice}</p>}</div>}
+    </div>}
+    {data && data.detail_status === "ready" && data.related_prs.length > 0 && <div className="mt-3 text-xs leading-5 text-amber-900"><h4 className="font-medium">其他 PR 合并后可能发生冲突</h4><ul className="mt-1 space-y-1">{data.related_prs.map((item) => <li key={item.id}>PR #{item.number} {item.title}：{item.paths.join("、")}</li>)}</ul><p className="mt-1">目标分支更新后会自动重新检查。</p></div>}
+    {data?.detail_status === "unavailable" && data.status !== "conflict" && <p className="mt-2 text-xs text-slate-600">其他 PR 的关联检查暂不可用：{data.detail_error}</p>}
+    {data?.checked_at && <p className="mt-2 text-xs text-slate-500">检查时间：{formatDate(data.checked_at)}</p>}
+  </section>;
 }
 
 type PreflightStatement = { text: string; evidence_ids: string[] };
@@ -4918,8 +5010,9 @@ function GitHubMergeActions({ repoId, pr, onChanged }: { repoId: string; pr: Pul
       <p className="text-sm font-medium text-ink">确认合并：{preview.title}</p>
       <p className="text-xs text-slate-600">{preview.head} → {preview.base}</p>
       {preview.mergeable === false && <p className="text-xs text-rose-700">GitHub 报告该 PR 暂时无法合并。</p>}
+      {preview.mergeable === null && <p className="text-xs text-slate-600">GitHub 正在检查合并状态，请稍后重新打开合并预览。</p>}
       <select value={method} onChange={(event) => setMethod(event.target.value)} aria-label="合并方式" className="h-9 w-full rounded-md border border-line bg-white px-3 text-sm"><option value="merge">创建合并提交</option><option value="squash">合并为一个提交</option><option value="rebase">变基后合并</option></select>
-      <div className="flex gap-2"><button onClick={merge} disabled={busy || preview.mergeable === false} className="primary-button rounded-md px-3 py-2 text-xs disabled:opacity-50">{busy ? "合并中..." : "确认合并"}</button><button onClick={() => setPreview(null)} className="rounded-md border border-line px-3 py-2 text-xs">取消</button></div>
+      <div className="flex gap-2"><button onClick={merge} disabled={busy || preview.mergeable !== true} className="primary-button rounded-md px-3 py-2 text-xs disabled:opacity-50">{busy ? "合并中..." : "确认合并"}</button><button onClick={() => setPreview(null)} className="rounded-md border border-line px-3 py-2 text-xs">取消</button></div>
     </div>}
     {error && <p role="alert" className="mt-2 text-xs text-rose-700">{error}</p>}
   </section>;
@@ -6242,10 +6335,9 @@ function classifyIssue(issue: Issue) {
 }
 
 function classifyPr(pr: PullRequest) {
-  const text = `${pr.title} ${pr.body ?? ""} ${(pr.files ?? []).map((file) => file.patch ?? file.filename).join(" ")}`.toLowerCase();
   if (pr.state === "closed" && !pr.merged_at) return "rejected";
-  if (text.includes("conflict")) return "conflict";
   if (pr.merged_at) return "done";
+  if (pr.conflict_status === "conflict") return "conflict";
   if (!pr.author) return "needsOwner";
   return "reviewing";
 }

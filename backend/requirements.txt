@@ -6,6 +6,8 @@ SQLAlchemy==2.0.36
 psycopg[binary]==3.2.3
 pgvector==0.3.6
 pymilvus>=2.5.0
+pygit2==1.19.1
+filelock==3.20.0
 alembic==1.14.0
 httpx==0.28.1
 langchain==1.2.17

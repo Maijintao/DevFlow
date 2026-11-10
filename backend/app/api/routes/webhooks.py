@@ -9,6 +9,7 @@ from app.db.models import Repository
 from app.db.session import SessionLocal
 from app.schemas.repos import RepoSyncRequest
 from app.services.repos_sync import sync_repository_by_id
+from app.services.pr_conflict import poll_wake
 
 router = APIRouter()
 
@@ -52,6 +53,8 @@ async def github_webhook(
         return {"accepted": False, "reason": f"{full_name} is not connected"}
 
     if x_github_event in {"issues", "pull_request", "workflow_run", "push", "check_suite", "check_run"}:
+        if x_github_event in {"pull_request", "push"} and settings.pr_conflict_enabled:
+            poll_wake.set()
         background_tasks.add_task(sync_repository_by_id, repo.id, RepoSyncRequest(limit=settings.auto_sync_limit))
         return {"accepted": True, "event": x_github_event, "repo_id": str(repo.id), "action": "sync_scheduled"}
 

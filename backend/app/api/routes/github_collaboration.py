@@ -1,3 +1,4 @@
+import asyncio
 from datetime import datetime, timezone
 from typing import Literal
 from uuid import UUID
@@ -7,12 +8,14 @@ from pydantic import BaseModel, Field, SecretStr
 from sqlalchemy.orm import Session
 
 from app.api.routes.auth import password_hasher, require_login
+from app.core.config import settings
 from app.db.models import GitHubIdentity, Issue, LocalCredential, ProjectMember, PullRequest, Repository, User, UserProfile
 from app.db.session import get_db
 from app.services.github.client import GitHubClient
 from app.services.github.user_auth import github_user_token
 from app.services.permissions import write_audit_log
 from app.services.repos_sync import parse_github_datetime
+from app.services.pr_conflict import poll_wake
 
 router = APIRouter()
 ProjectRole = Literal["leader", "developer", "product_manager"]
@@ -145,7 +148,7 @@ async def remove_member(repo_id: UUID, member_id: UUID, user: User = Depends(req
 async def create_issue(repo_id: UUID, payload: IssueRequest, user: User = Depends(require_login), db: Session = Depends(get_db)) -> dict:
     repo = _repo(db, repo_id)
     _member(db, repo_id, user, {"leader", "developer", "product_manager"})
-    repo = db.query(Repository).filter(Repository.id == repo_id).with_for_update().one()
+    repo = await asyncio.to_thread(lambda: db.query(Repository).filter(Repository.id == repo_id).with_for_update().one())
     if not payload.title.strip():
         raise HTTPException(status_code=400, detail="请输入 Issue 标题")
     client = await _client(db, user, repo)
@@ -177,7 +180,7 @@ async def claim_issue(issue_id: UUID, user: User = Depends(require_login), db: S
     if identity is None:
         raise HTTPException(status_code=400, detail="请先绑定个人 GitHub Token")
     client = await _client(db, user, repo)
-    issue = db.query(Issue).filter(Issue.id == issue_id).with_for_update().one()
+    issue = await asyncio.to_thread(lambda: db.query(Issue).filter(Issue.id == issue_id).with_for_update().one())
     path = f"/repos/{repo.owner}/{repo.name}/issues/{issue.number}"
     remote = await client.get(path)
     if remote["state"] != "open":
@@ -218,7 +221,7 @@ async def assign_issue(issue_id: UUID, payload: AssignmentRequest, user: User = 
             raise HTTPException(status_code=400, detail="该成员尚未关联 GitHub 账号")
         assignees = [identity.login]
     client = await _client(db, user, repo)
-    db.query(Issue).filter(Issue.id == issue_id).with_for_update().one()
+    await asyncio.to_thread(lambda: db.query(Issue).filter(Issue.id == issue_id).with_for_update().one())
     path = f"/repos/{repo.owner}/{repo.name}/issues/{issue.number}"
     current = await client.get(path)
     if current["state"] != "open":
@@ -249,10 +252,18 @@ async def create_pull_request(repo_id: UUID, payload: PullRequestCreate, user: U
     remote = await client.post(f"/repos/{repo.owner}/{repo.name}/pulls", {
         "title": payload.title.strip(), "body": body, "head": payload.head.strip(), "base": payload.base.strip(),
     })
-    pr = PullRequest(repo_id=repo.id, github_pr_id=remote["id"], number=remote["number"], title=remote["title"], body=remote.get("body"), state=remote["state"], author=remote["user"]["login"], base_branch=remote["base"]["ref"], head_branch=remote["head"]["ref"], created_at=parse_github_datetime(remote.get("created_at")), updated_at=parse_github_datetime(remote.get("updated_at")))
-    db.add(pr)
+    await asyncio.to_thread(lambda: db.query(Repository).filter(Repository.id == repo.id).with_for_update().one())
+    pr = db.query(PullRequest).filter(PullRequest.repo_id == repo.id, PullRequest.github_pr_id == remote["id"]).one_or_none()
+    if pr is None:
+        pr = PullRequest(repo_id=repo.id, github_pr_id=remote["id"], number=remote["number"], title=remote["title"])
+        db.add(pr)
+    pr.number, pr.title, pr.body, pr.state = remote["number"], remote["title"], remote.get("body"), remote["state"]
+    pr.author, pr.base_branch, pr.head_branch = remote["user"]["login"], remote["base"]["ref"], remote["head"]["ref"]
+    pr.created_at, pr.updated_at = parse_github_datetime(remote.get("created_at")), parse_github_datetime(remote.get("updated_at"))
     write_audit_log(db, user=user, repo_id=repo.id, action="github.pull_request.create", target_type="pull_request", target_id=str(remote["number"]), request_json={"issue_number": issue.number, "head": payload.head, "base": payload.base})
     db.commit()
+    if settings.pr_conflict_enabled:
+        poll_wake.set()
     return {"pr_id": str(pr.id), "number": pr.number, "url": remote["html_url"]}
 
 
@@ -276,6 +287,11 @@ async def merge_pull_request(pr_id: UUID, payload: MergeRequest, user: User = De
     repo = _repo(db, pr.repo_id)
     _member(db, repo.id, user, {"leader"})
     client = await _client(db, user, repo)
+    current = await client.get(f"/repos/{repo.owner}/{repo.name}/pulls/{pr.number}")
+    if current.get("mergeable") is None:
+        raise HTTPException(status_code=409, detail="GitHub 正在检查合并状态，请稍后重试")
+    if not current["mergeable"]:
+        raise HTTPException(status_code=409, detail="该 PR 存在合并冲突，请处理后重新检查")
     result = await client.put(f"/repos/{repo.owner}/{repo.name}/pulls/{pr.number}/merge", {"sha": payload.head_sha, "merge_method": payload.merge_method})
     if not result.get("merged"):
         raise HTTPException(status_code=409, detail=result.get("message") or "GitHub 未完成合并")
@@ -283,4 +299,6 @@ async def merge_pull_request(pr_id: UUID, payload: MergeRequest, user: User = De
     pr.merged_at = datetime.now(timezone.utc)
     write_audit_log(db, user=user, repo_id=repo.id, action="github.pull_request.merge", target_type="pull_request", target_id=str(pr.id), request_json={"merge_method": payload.merge_method, "head_sha": payload.head_sha})
     db.commit()
+    if settings.pr_conflict_enabled:
+        poll_wake.set()
     return {"merged": True, "message": result.get("message")}

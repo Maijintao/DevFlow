@@ -95,6 +95,12 @@ class Settings(BaseSettings):
     issue_preflight_workers: int = 2
     issue_preflight_max_attempts: int = 3
     issue_preflight_lease_seconds: int = 300
+    pr_conflict_enabled: bool = True
+    pr_conflict_poll_interval_seconds: int = 60
+    pr_conflict_retry_seconds: int = 5
+    pr_conflict_workers: int = 2
+    pr_conflict_detail_workers: int = 1
+    pr_conflict_lease_seconds: int = 300
 
     model_config = SettingsConfigDict(env_file=("../.env", ".env"), env_file_encoding="utf-8", extra="ignore")
 

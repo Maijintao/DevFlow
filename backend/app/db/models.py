@@ -217,6 +217,39 @@ class PullRequest(Base):
     review_comments: Mapped[list["PRReviewComment"]] = relationship(back_populates="pr", cascade="all, delete-orphan")
 
 
+class PRConflictCheck(Base):
+    __tablename__ = "pr_conflict_checks"
+
+    pr_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("pull_requests.id", ondelete="CASCADE"), primary_key=True)
+    head_sha: Mapped[str] = mapped_column(String(64))
+    base_sha: Mapped[str] = mapped_column(String(64))
+    status: Mapped[str] = mapped_column(String(24), default="pending", index=True)
+    checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    available_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    detail_status: Mapped[str] = mapped_column(String(24), default="waiting", index=True)
+    detail_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    detail_lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    detail_lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    conflict_files: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    related_prs: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    advice_status: Mapped[str] = mapped_column(String(24), default="waiting", index=True)
+    advice_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    advice_lease_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    advice_lease_token: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    advice: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+
+
+class PRConflictPollState(Base):
+    __tablename__ = "pr_conflict_poll_states"
+
+    repo_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("repositories.id", ondelete="CASCADE"), primary_key=True)
+    last_success_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class PRFile(Base):
     __tablename__ = "pr_files"
 

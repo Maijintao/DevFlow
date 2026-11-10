@@ -63,7 +63,7 @@ def enqueue_issue(db: Session, issue: Issue, *, force: bool = False) -> IssuePre
 async def poll_repository(repo_id: uuid.UUID) -> int:
     db = SessionLocal()
     try:
-        repo = db.query(Repository).filter(Repository.id == repo_id).with_for_update().one_or_none()
+        repo = await asyncio.to_thread(lambda: db.query(Repository).filter(Repository.id == repo_id).with_for_update().one_or_none())
         if repo is None:
             return 0
         cursor = db.get(IssuePollCursor, repo_id)
@@ -89,7 +89,7 @@ async def poll_repository(repo_id: uuid.UUID) -> int:
             cursor.remote_commit_sha = None
             cursor.remote_error = str(exc)[:1000]
         for item in items:
-            issue = db.query(Issue).filter(Issue.repo_id == repo.id, Issue.github_issue_id == item["id"]).with_for_update().one_or_none()
+            issue = await asyncio.to_thread(lambda: db.query(Issue).filter(Issue.repo_id == repo.id, Issue.github_issue_id == item["id"]).with_for_update().one_or_none())
             if issue is None:
                 issue = Issue(repo_id=repo.id, github_issue_id=item["id"], number=item["number"], title=item["title"])
                 db.add(issue)

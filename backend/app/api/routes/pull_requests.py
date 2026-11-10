@@ -8,7 +8,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import or_
 from sqlalchemy.orm import Session, selectinload
 
-from app.db.models import AnalysisResult, CodeRelation, CodeSymbol, Conversation, Document, PullRequest, Repository, WorkflowRun
+from app.db.models import AnalysisResult, CodeRelation, CodeSymbol, Conversation, Document, PRConflictCheck, PRConflictPollState, PullRequest, Repository, WorkflowRun
 from app.db.session import get_db
 from app.schemas.pull_requests import PRAnalysisResponse, PullRequestResponse
 from app.services.agents.pr_review_agent import PRReviewAgent
@@ -16,8 +16,47 @@ from app.services.chat_memory import ContextAssembler
 from app.services.code_search import search_repository_code
 from app.services.rag.retrieval import search_similar_documents
 from app.services.worktree_manager import cleanup_pr_snapshots, prepare_pr_worktree
+from app.core.config import settings
+from app.services.pr_conflict import _reset_check, check_wake, poll_wake
 
 router = APIRouter()
+
+
+@router.get("/pull-requests/{pr_id}/conflict-check")
+async def get_pr_conflict_check(pr_id: UUID, db: Session = Depends(get_db)) -> dict:
+    pr = db.get(PullRequest, pr_id)
+    if pr is None:
+        raise HTTPException(status_code=404, detail="未找到 PR")
+    check = db.get(PRConflictCheck, pr_id)
+    poll = db.get(PRConflictPollState, pr.repo_id)
+    if check is None:
+        return {"status": "disabled" if not settings.pr_conflict_enabled else "unavailable" if poll and poll.error else "pending", "error": poll.error if poll else None, "conflict_files": [], "related_prs": []}
+    related = []
+    for item in check.related_prs or []:
+        other = db.get(PRConflictCheck, UUID(item["id"]))
+        other_pr = db.get(PullRequest, UUID(item["id"]))
+        if other and other_pr and other_pr.state == "open" and other.head_sha == item["head_sha"] and other.base_sha == item["base_sha"]:
+            related.append(item)
+    status = "unavailable" if poll and poll.error and check.status != "closed" else check.status
+    return {"status": status, "error": poll.error if poll and poll.error else check.error, "head_sha": check.head_sha, "base_sha": check.base_sha, "checked_at": check.checked_at, "detail_status": check.detail_status, "detail_error": check.detail_error, "conflict_files": check.conflict_files or [], "related_prs": related, "advice_status": check.advice_status, "advice_error": check.advice_error, "advice": check.advice}
+
+
+@router.post("/pull-requests/{pr_id}/conflict-check/recheck")
+async def recheck_pr_conflict(pr_id: UUID, db: Session = Depends(get_db)) -> dict:
+    if not settings.pr_conflict_enabled:
+        raise HTTPException(status_code=409, detail="PR 冲突检查尚未启用")
+    pr = db.get(PullRequest, pr_id)
+    if pr is None:
+        raise HTTPException(status_code=404, detail="未找到 PR")
+    if pr.state != "open":
+        raise HTTPException(status_code=409, detail="该 PR 已关闭")
+    check = db.query(PRConflictCheck).filter(PRConflictCheck.pr_id == pr_id).with_for_update().one_or_none()
+    if check:
+        _reset_check(check, check.head_sha, check.base_sha)
+        db.commit()
+        check_wake.set()
+    poll_wake.set()
+    return {"status": "pending"}
 
 PROJECT_DOC_TYPES = {"knowledge_file", "memory_note", "project_doc"}
 PUBLIC_REASONING_PROMPT = """
@@ -451,14 +490,23 @@ async def _pr_analysis_sse(pr_id: UUID, conversation_id: UUID | None, db: Sessio
 
 
 @router.get("/repos/{repo_id}/pull-requests", response_model=list[PullRequestResponse])
-async def list_pull_requests(repo_id: UUID, db: Session = Depends(get_db)) -> list[PullRequest]:
-    return (
+async def list_pull_requests(repo_id: UUID, db: Session = Depends(get_db)) -> list[dict]:
+    rows = (
         db.query(PullRequest)
         .options(selectinload(PullRequest.files), selectinload(PullRequest.review_comments))
         .filter(PullRequest.repo_id == repo_id)
         .order_by(PullRequest.number.desc())
         .all()
     )
+    checks = {item.pr_id: item for item in db.query(PRConflictCheck).filter(PRConflictCheck.pr_id.in_([row.id for row in rows])).all()}
+    poll = db.get(PRConflictPollState, repo_id)
+    result = []
+    for row in rows:
+        item = PullRequestResponse.model_validate(row).model_dump()
+        check = checks.get(row.id)
+        item["conflict_status"] = "unavailable" if poll and poll.error else check.status if check else "pending" if settings.pr_conflict_enabled and row.state == "open" else None
+        result.append(item)
+    return result
 
 
 @router.get("/pull-requests/{pr_id}", response_model=PullRequestResponse)
