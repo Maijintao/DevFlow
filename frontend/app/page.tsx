@@ -29,7 +29,6 @@ import {
   Trash2,
   Upload,
   X,
-  XCircle,
   type LucideIcon
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
@@ -2510,8 +2509,6 @@ export default function DashboardPage() {
   const openPrs = prs.filter((item) => item.state === "open");
   const failedRuns = runs.filter((item) => item.conclusion === "failure");
   const mergedPrs = prs.filter((item) => item.merged_at);
-  const rejectedIssues = issues.filter((item) => classifyIssue(item) === "rejected");
-  const handledIssues = issues.filter((item) => ["accepted", "closed"].includes(classifyIssue(item)));
   const selectedIssue = selectedWorkspaceItem?.type === "issue" ? issues.find((item) => item.id === selectedWorkspaceItem.id) : undefined;
   const selectedPr = selectedWorkspaceItem?.type === "pr" ? prs.find((item) => item.id === selectedWorkspaceItem.id) : undefined;
   const selectedRun = selectedWorkspaceItem?.type === "ci" ? runs.find((item) => item.id === selectedWorkspaceItem.id) : undefined;
@@ -2697,8 +2694,6 @@ export default function DashboardPage() {
           <div className="workspace-stats mt-3 grid gap-2">
             <MetricCard icon={ListTodo} label="待处理 Issue" value={openIssues.length} />
             <MetricCard icon={GitPullRequest} label="待 Review PR" value={openPrs.length} />
-            <MetricCard icon={CheckCircle2} label="已处理 Issue" value={handledIssues.length} />
-            <MetricCard icon={XCircle} label="已拒绝 Issue" value={rejectedIssues.length} />
             <MetricCard icon={AlertTriangle} label="失败 CI" value={failedRuns.length} />
             <MetricCard icon={CheckCircle2} label="已合并 PR" value={mergedPrs.length} />
           </div>

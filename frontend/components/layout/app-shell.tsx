@@ -4,7 +4,7 @@ import Link from "next/link";
 import Image from "next/image";
 import { usePathname } from "next/navigation";
 import { useEffect, useState, type FormEvent } from "react";
-import { Activity, BookOpen, Boxes, ClipboardCheck, FolderGit2, GitBranch, LayoutDashboard, ListChecks, MessageSquareText } from "lucide-react";
+import { Activity, BookOpen, Boxes, FolderGit2, GitBranch, LayoutDashboard, ListChecks, MessageSquareText } from "lucide-react";
 import { apiGet, apiPatch, apiPost, apiPut } from "@/lib/api";
 
 type Account = {
@@ -22,7 +22,6 @@ const navItems = [
   { href: "/knowledge", label: "项目知识", icon: BookOpen },
   { href: "/rag", label: "知识问答", icon: MessageSquareText },
   { href: "/repos", label: "仓库管理", icon: FolderGit2 },
-  { href: "/action-drafts", label: "操作草稿", icon: ClipboardCheck },
   { href: "/workflow-runs", label: "工作流记录", icon: Activity },
   { href: "/workspaces", label: "研发周报", icon: ListChecks },
   { href: "/code-graph", label: "代码图谱", icon: GitBranch },
