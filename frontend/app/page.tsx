@@ -4562,7 +4562,7 @@ function WorkspaceDetail({
         </div>
       )}
       <div className="mt-3 whitespace-pre-wrap rounded-md bg-panel p-3 text-xs leading-6 text-slate-700">{body}</div>
-      {repo && issue && <IssuePreflight key={issue.id} issue={issue} />}
+      {repo && issue && <IssuePreflight key={`preflight-${issue.id}`} issue={issue} />}
       {repo && issue && <GitHubIssueActions key={issue.id} repo={repo} issue={issue} onChanged={onGithubChange} />}
       {repo && pr && <GitHubMergeActions key={pr.id} repoId={repo.id} pr={pr} onChanged={onGithubChange} />}
       {pr?.files && pr.files.length > 0 && (
